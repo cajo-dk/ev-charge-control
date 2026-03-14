@@ -1,5 +1,5 @@
 name: "EV Charge Control"
-version: "1.0.2"
+version: "1.0.3"
 slug: "ev_charge_control"
 description: "Calculate EV charging windows from pricing, SoC targets, and finish-by constraints."
 url: "https://github.com/cajo-dk/ev-charge-control"

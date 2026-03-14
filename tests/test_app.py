@@ -1,10 +1,15 @@
+import json
+import logging
+from datetime import datetime
 from pathlib import Path
 
 from evcc.app import (
     AppConfig,
     create_home_assistant_client,
     load_options,
+    next_scheduled_run,
     perform_api_cycle,
+    run_api_cycle_with_error_handling,
     validate_config,
 )
 from evcc.ha_api import HomeAssistantApiError
@@ -30,7 +35,27 @@ class DummyClient:
         return {
             "state": "ok",
             "attributes": {
-                "raw_today": [{"hour": "2026-03-14T00:00:00+01:00", "price": 1.2}],
+                "raw_today": [
+                    {"hour": "2026-03-14T00:15:00+01:00", "price": 1.2},
+                    {"hour": "2026-03-14T00:30:00+01:00", "price": 1.1},
+                    {"hour": "2026-03-14T00:45:00+01:00", "price": 1.0},
+                    {"hour": "2026-03-14T01:00:00+01:00", "price": 0.9},
+                    {"hour": "2026-03-14T01:15:00+01:00", "price": 0.8},
+                    {"hour": "2026-03-14T01:30:00+01:00", "price": 0.7},
+                    {"hour": "2026-03-14T01:45:00+01:00", "price": 0.6},
+                    {"hour": "2026-03-14T02:00:00+01:00", "price": 0.5},
+                    {"hour": "2026-03-14T02:15:00+01:00", "price": 0.4},
+                    {"hour": "2026-03-14T02:30:00+01:00", "price": 0.3},
+                    {"hour": "2026-03-14T02:45:00+01:00", "price": 0.2},
+                    {"hour": "2026-03-14T03:00:00+01:00", "price": 0.2},
+                    {"hour": "2026-03-14T03:15:00+01:00", "price": 0.2},
+                    {"hour": "2026-03-14T03:30:00+01:00", "price": 0.2},
+                    {"hour": "2026-03-14T03:45:00+01:00", "price": 0.2},
+                    {"hour": "2026-03-14T04:00:00+01:00", "price": 0.2},
+                    {"hour": "2026-03-14T04:15:00+01:00", "price": 0.2},
+                    {"hour": "2026-03-14T04:30:00+01:00", "price": 0.2},
+                    {"hour": "2026-03-14T04:45:00+01:00", "price": 0.2},
+                ],
                 "raw_tomorrow": None,
                 "forecast": [{"hour": "2026-03-15T00:00:00+01:00", "price": 1.1}],
             },
@@ -78,12 +103,57 @@ def test_perform_api_cycle_writes_placeholder_result(caplog) -> None:
         }
     )
 
-    perform_api_cycle(client=client, config=config, logger=__import__("logging").getLogger("test"))
+    perform_api_cycle(
+        client=client,
+        config=config,
+        logger=logging.getLogger("test"),
+        now=datetime.fromisoformat("2026-03-14T00:01:00+01:00"),
+    )
 
     assert client.writes
     assert client.writes[0][0] == "input_text.evcc_result"
-    assert "\"status\": \"ok\"" in client.writes[0][1]
+    payload = json.loads(client.writes[0][1])
+    assert payload["status"] == "ok"
+    assert payload["start"] == "00:15"
+    assert payload["end"] == "05:00"
 
 
 def test_api_error_preserves_explicit_exception_type() -> None:
     assert isinstance(HomeAssistantApiError("boom"), RuntimeError)
+
+
+def test_next_scheduled_run_uses_requested_minutes() -> None:
+    current_time = datetime.fromisoformat("2026-03-14T00:02:00+01:00")
+    assert next_scheduled_run(current_time) == datetime.fromisoformat(
+        "2026-03-14T00:16:00+01:00"
+    )
+
+
+def test_run_api_cycle_with_error_handling_writes_error_result() -> None:
+    class FailingClient(DummyClient):
+        def get_state(self, entity_id: str) -> dict:
+            raise HomeAssistantApiError("boom")
+
+    client = FailingClient()
+    config = AppConfig.from_mapping(
+        {
+            "ev_current_soc_entity": "sensor.ev_current_soc",
+            "target_soc_entity": "input_number.ev_target_soc",
+            "ev_battery_capacity_entity": "sensor.ev_battery_capacity",
+            "charger_speed_entity": "sensor.ev_charger_power",
+            "charge_loss_entity": "input_number.ev_charge_loss",
+            "finish_by_entity": "input_datetime.ev_finish_by",
+            "pricing_information_entity": "sensor.electricity_prices",
+            "result_helper_entity": "input_text.evcc_result",
+        }
+    )
+
+    run_api_cycle_with_error_handling(
+        client=client,
+        config=config,
+        logger=logging.getLogger("test"),
+        now=datetime.fromisoformat("2026-03-14T00:01:00+01:00"),
+    )
+
+    payload = json.loads(client.writes[0][1])
+    assert payload["status"] == "boom"
