@@ -261,14 +261,16 @@ def _parse_finish_by(value: str | float | int | None, now: datetime) -> datetime
 
 
 def _normalize_pricing(pricing: PricingPayload, now: datetime) -> list[PricePoint]:
-    entries = list(pricing.raw_today)
+    entries: list[tuple[dict[str, Any], str]] = [
+        (entry, "raw_today") for entry in pricing.raw_today
+    ]
     if pricing.raw_tomorrow is not None:
-        entries.extend(pricing.raw_tomorrow)
+        entries.extend((entry, "raw_tomorrow") for entry in pricing.raw_tomorrow)
     elif pricing.forecast is not None:
-        entries.extend(pricing.forecast)
+        entries.extend((entry, "forecast") for entry in pricing.forecast)
 
     points_by_time: dict[datetime, float] = {}
-    for entry in entries:
+    for entry, source in entries:
         if not isinstance(entry, dict):
             raise HomeAssistantApiError("Pricing entries must be objects.")
         starts_at_raw = entry.get("hour")
@@ -288,7 +290,8 @@ def _normalize_pricing(pricing: PricingPayload, now: datetime) -> list[PricePoin
             price = float(price_raw)
         except (TypeError, ValueError) as exc:
             raise HomeAssistantApiError(f"Invalid pricing value: {price_raw}") from exc
-        points_by_time[starts_at] = price
+        for point_time in _expand_price_points(starts_at, price, source):
+            points_by_time[point_time.starts_at] = point_time.price
 
     if not points_by_time:
         raise HomeAssistantApiError("No pricing data was available for calculation.")
@@ -344,3 +347,18 @@ def _is_contiguous(points: list[PricePoint]) -> bool:
         later.starts_at - earlier.starts_at == PRICE_INTERVAL
         for earlier, later in zip(points, points[1:])
     )
+
+
+def _expand_price_points(
+    starts_at: datetime,
+    price: float,
+    source: str,
+) -> list[PricePoint]:
+    if source != "forecast":
+        return [PricePoint(starts_at=starts_at, price=price)]
+
+    # Forecast data can arrive hourly while the calculator operates on 15-minute slots.
+    return [
+        PricePoint(starts_at=starts_at + (PRICE_INTERVAL * offset), price=price)
+        for offset in range(4)
+    ]

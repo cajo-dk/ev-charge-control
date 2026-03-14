@@ -209,3 +209,44 @@ def test_calculate_result_raises_when_nighttime_only_window_is_not_available() -
             live_inputs,
             now=datetime.fromisoformat("2026-03-14T22:10:00+01:00"),
         )
+
+
+def test_calculate_result_uses_hourly_forecast_for_nighttime_windows() -> None:
+    live_inputs = LiveInputs(
+        ev_current_soc="47",
+        target_soc="100",
+        ev_battery_capacity="72",
+        charger_speed="10.24",
+        charge_loss="10",
+        finish_by="08:30",
+        nighttime_charging_only=True,
+        pricing_information=PricingPayload(
+            raw_today=[
+                {"hour": "2026-03-14T23:00:00+01:00", "price": 1.856},
+                {"hour": "2026-03-14T23:15:00+01:00", "price": 1.756},
+                {"hour": "2026-03-14T23:30:00+01:00", "price": 1.742},
+                {"hour": "2026-03-14T23:45:00+01:00", "price": 1.640},
+            ],
+            raw_tomorrow=None,
+            forecast=[
+                {"hour": "2026-03-15T00:00:00+01:00", "price": 1.517},
+                {"hour": "2026-03-15T01:00:00+01:00", "price": 1.498},
+                {"hour": "2026-03-15T02:00:00+01:00", "price": 1.333},
+                {"hour": "2026-03-15T03:00:00+01:00", "price": 1.359},
+                {"hour": "2026-03-15T04:00:00+01:00", "price": 1.376},
+                {"hour": "2026-03-15T05:00:00+01:00", "price": 1.353},
+                {"hour": "2026-03-15T06:00:00+01:00", "price": 1.526},
+                {"hour": "2026-03-15T07:00:00+01:00", "price": 1.583},
+                {"hour": "2026-03-15T08:00:00+01:00", "price": 1.581},
+            ],
+        ),
+    )
+
+    payload = calculate_result(
+        live_inputs,
+        now=datetime.fromisoformat("2026-03-14T11:39:00+01:00"),
+    )
+
+    assert payload["status"] == "ok"
+    assert payload["start"] == "01:45"
+    assert payload["end"] == "06:00"

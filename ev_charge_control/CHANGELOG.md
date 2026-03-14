@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.1
+- Fixed nighttime charging failures when tomorrow pricing was sourced from hourly forecast data.
+- Expanded forecast pricing into 15-minute slots before the charging window search.
+
 ## 1.2.0
 - Added charger execution control with a charger switch and schedule authorization helper.
 - Added per-minute schedule execution checks while keeping quarter-hour calculation updates.
