@@ -29,10 +29,12 @@ The application is expected to read configuration and input data from Home Assis
 
 - `CONTEXT.md`: authoritative product and release context for this repository.
 - `VERSIONING.md`: rules for `release.feature.fix` versioning and documentation workflow.
-- `config.yaml`: Home Assistant add-on metadata and configuration schema.
-- `build.yaml`: architecture-specific Home Assistant base image configuration.
-- `Dockerfile`: add-on container build definition.
-- `src/evcc/`: Python application package for the EVCC service.
+- `repository.yaml`: Home Assistant add-on repository metadata.
+- `ev_charge_control/`: deployable Home Assistant add-on folder.
+- `ev_charge_control/config.yaml`: add-on metadata and configuration schema.
+- `ev_charge_control/build.yaml`: architecture-specific Home Assistant base image configuration.
+- `ev_charge_control/Dockerfile`: add-on container build definition.
+- `ev_charge_control/src/evcc/`: Python application package for the EVCC service.
 - `doc/fr-xxx.md`: template for feature request planning.
 - `doc/fix-xxx.md`: template for documenting deployed fixes.
 - `doc/features/`: approved and tracked feature request documents.
@@ -79,10 +81,11 @@ python -m evcc
 
 The repository now includes the baseline files required to package EVCC as a Home Assistant add-on:
 
-- `config.yaml` defines add-on metadata and user-configurable options.
-- `build.yaml` selects the Home Assistant Python base images per architecture.
-- `Dockerfile` builds the add-on container and starts the EVCC service.
-- `run.sh` starts the Python module inside the add-on container.
+- `repository.yaml` defines the add-on repository for Home Assistant.
+- `ev_charge_control/config.yaml` defines add-on metadata and user-configurable options.
+- `ev_charge_control/build.yaml` selects the Home Assistant Python base images per architecture.
+- `ev_charge_control/Dockerfile` builds the add-on container and starts the EVCC service.
+- `ev_charge_control/run.sh` starts the Python module inside the add-on container.
 - The add-on uses the internal Home Assistant API proxy and requires `homeassistant_api: true`.
 
 The current implementation can read configured Home Assistant entities and write a placeholder result payload back to the configured `input_text` helper. The charging algorithm itself is not implemented yet.

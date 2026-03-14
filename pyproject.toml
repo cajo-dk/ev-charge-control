@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ev-charge-control"
-version = "1.0.0"
+version = "1.0.1"
 description = "Home Assistant EV charge control app."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -20,7 +20,7 @@ dev = [
 ]
 
 [tool.setuptools]
-package-dir = { "" = "src" }
+package-dir = { "" = "ev_charge_control/src" }
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["ev_charge_control/src"]
