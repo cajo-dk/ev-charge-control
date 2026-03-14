@@ -23,6 +23,12 @@ configuration:
   nighttime_charging_only_entity:
     name: Nighttime Charging Only
     description: Entity ID for the input_boolean helper that restricts charging to the next midnight-to-finish-by window when turned on.
+  charger_control_switch_entity:
+    name: Charger Control Switch
+    description: Entity ID for the switch that EV Charge Control turns on to start charging.
+  schedule_authorized_entity:
+    name: Schedule Authorized
+    description: Entity ID for the input_boolean helper that authorizes EV Charge Control to start charging at the calculated time.
   pricing_information_entity:
     name: Pricing information entity
     description: Entity ID for the pricing sensor that provides raw_today, raw_tomorrow, and forecast attributes.

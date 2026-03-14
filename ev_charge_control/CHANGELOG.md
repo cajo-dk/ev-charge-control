@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.0
+- Added charger execution control with a charger switch and schedule authorization helper.
+- Added per-minute schedule execution checks while keeping quarter-hour calculation updates.
+- Locked schedule recalculation while charging is active until target SoC or finish-by is reached.
+
 ## 1.1.0
 - Added the Nighttime Charging Only helper to control whether charging may start only after the next midnight.
 - Extended the calculator to enforce the overnight-only restriction without falling back to unrestricted scheduling.

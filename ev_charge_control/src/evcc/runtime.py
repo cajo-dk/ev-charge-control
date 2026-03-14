@@ -131,6 +131,18 @@ def calculate_result(
     }
 
 
+def parse_percentage_value(value: str | float | int | None, field_name: str) -> float:
+    return _parse_percentage(value, field_name)
+
+
+def parse_finish_by_value(value: str | float | int | None, now: datetime) -> datetime:
+    return _parse_finish_by(value, now)
+
+
+def parse_input_boolean_value(value: str | float | int | None, field_name: str) -> bool:
+    return _parse_input_boolean_state(value, field_name)
+
+
 def next_quarter_boundary(current_time: datetime) -> datetime:
     aligned = current_time.replace(second=0, microsecond=0)
     next_quarter = ((aligned.minute // 15) + 1) * 15

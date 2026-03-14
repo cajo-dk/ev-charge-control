@@ -17,6 +17,9 @@ from evcc.runtime import (
     calculate_result,
     dump_result_payload,
     load_live_inputs,
+    parse_finish_by_value,
+    parse_input_boolean_value,
+    parse_percentage_value,
 )
 
 
@@ -37,6 +40,8 @@ class AppConfig:
     charge_loss_entity: str = ""
     finish_by_entity: str = ""
     nighttime_charging_only_entity: str = ""
+    charger_control_switch_entity: str = ""
+    schedule_authorized_entity: str = ""
     pricing_information_entity: str = ""
     result_helper_entity: str = ""
 
@@ -54,6 +59,16 @@ class AppConfig:
             log_level = DEFAULT_LOG_LEVEL
         normalized["log_level"] = log_level
         return cls(**normalized)
+
+
+@dataclass(slots=True)
+class ExecutionState:
+    current_soc: float
+    target_soc: float
+    finish_by: datetime
+    charger_enabled: bool
+    schedule_authorized: bool
+    result_payload: dict[str, Any] | None
 
 
 def configure_logging(level: str) -> None:
@@ -80,6 +95,8 @@ def validate_config(config: AppConfig) -> list[str]:
         "charge_loss_entity",
         "finish_by_entity",
         "nighttime_charging_only_entity",
+        "charger_control_switch_entity",
+        "schedule_authorized_entity",
         "pricing_information_entity",
         "result_helper_entity",
     )
@@ -187,6 +204,185 @@ def run_api_cycle_with_error_handling(
             logger.error("Failed to write API error status to helper: %s", write_exc)
 
 
+def should_run_calculation(
+    current_time: datetime,
+    last_calculation_time: datetime | None,
+) -> bool:
+    if current_time.minute not in RUN_MINUTES:
+        return False
+    if last_calculation_time is None:
+        return True
+    return last_calculation_time.replace(second=0, microsecond=0) != current_time.replace(
+        second=0,
+        microsecond=0,
+    )
+
+
+def load_execution_state(
+    client: HomeAssistantClient,
+    config: AppConfig,
+    *,
+    now: datetime,
+) -> ExecutionState:
+    current_soc = parse_percentage_value(
+        client.get_entity_value(config.ev_current_soc_entity),
+        "ev_current_soc",
+    )
+    target_soc = parse_percentage_value(
+        client.get_entity_value(config.target_soc_entity),
+        "target_soc",
+    )
+    finish_by = parse_finish_by_value(
+        client.get_entity_value(config.finish_by_entity),
+        now,
+    )
+    charger_enabled = _parse_switch_state(
+        client.get_entity_value(config.charger_control_switch_entity),
+        "charger_control_switch_entity",
+    )
+    schedule_authorized = parse_input_boolean_value(
+        client.get_entity_value(config.schedule_authorized_entity),
+        "schedule_authorized_entity",
+    )
+    result_payload = load_result_payload(client, config)
+    return ExecutionState(
+        current_soc=current_soc,
+        target_soc=target_soc,
+        finish_by=finish_by,
+        charger_enabled=charger_enabled,
+        schedule_authorized=schedule_authorized,
+        result_payload=result_payload,
+    )
+
+
+def load_result_payload(
+    client: HomeAssistantClient,
+    config: AppConfig,
+) -> dict[str, Any] | None:
+    raw_payload = client.get_entity_value(config.result_helper_entity)
+    if raw_payload is None:
+        return None
+
+    normalized = str(raw_payload).strip()
+    if normalized in {"", "unknown", "unavailable", "none", "null"}:
+        return None
+
+    try:
+        payload = json.loads(normalized)
+    except json.JSONDecodeError as exc:
+        raise HomeAssistantApiError(
+            f"Result helper '{config.result_helper_entity}' did not contain valid JSON."
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise HomeAssistantApiError(
+            f"Result helper '{config.result_helper_entity}' did not contain a JSON object."
+        )
+    return payload
+
+
+def should_unlock_schedule(state: ExecutionState, *, now: datetime) -> bool:
+    return state.current_soc >= state.target_soc or now >= state.finish_by
+
+
+def is_schedule_due(result_payload: dict[str, Any] | None, *, now: datetime) -> bool:
+    if not result_payload:
+        return False
+
+    status = str(result_payload.get("status", "")).strip().lower()
+    start = str(result_payload.get("start", "")).strip()
+    timestamp = str(result_payload.get("timestamp", "")).strip()
+    if status != "ok" or not start or not timestamp:
+        return False
+
+    scheduled_start = resolve_schedule_start(start=start, timestamp=timestamp, now=now)
+    return now >= scheduled_start
+
+
+def resolve_schedule_start(*, start: str, timestamp: str, now: datetime) -> datetime:
+    try:
+        created_at = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HomeAssistantApiError(f"Could not parse result payload timestamp: {timestamp}") from exc
+
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=now.tzinfo)
+    created_at = created_at.astimezone(now.tzinfo)
+
+    parsed_start: datetime | None = None
+    for fmt in ("%H:%M", "%H:%M:%S"):
+        try:
+            parsed_start = datetime.strptime(start, fmt)
+            break
+        except ValueError:
+            continue
+    if parsed_start is None:
+        raise HomeAssistantApiError(f"Could not parse result payload start time: {start}")
+
+    scheduled_start = created_at.replace(
+        hour=parsed_start.hour,
+        minute=parsed_start.minute,
+        second=0,
+        microsecond=0,
+    )
+    if scheduled_start < created_at:
+        scheduled_start += timedelta(days=1)
+    return scheduled_start
+
+
+def execute_due_schedule(
+    *,
+    client: HomeAssistantClient,
+    config: AppConfig,
+    logger: logging.Logger,
+) -> None:
+    client.turn_on_switch(config.charger_control_switch_entity)
+    client.turn_off_input_boolean(config.schedule_authorized_entity)
+    logger.info(
+        "Started charging via switch '%s' and disabled authorization helper '%s'.",
+        config.charger_control_switch_entity,
+        config.schedule_authorized_entity,
+    )
+
+
+def process_minute_tick(
+    *,
+    client: HomeAssistantClient,
+    config: AppConfig,
+    logger: logging.Logger,
+    now: datetime,
+    last_calculation_time: datetime | None,
+) -> datetime | None:
+    state = load_execution_state(client, config, now=now)
+
+    if state.charger_enabled and not should_unlock_schedule(state, now=now):
+        logger.info(
+            "Charger switch '%s' is on; schedule updates remain locked.",
+            config.charger_control_switch_entity,
+        )
+        return last_calculation_time
+
+    if should_run_calculation(now, last_calculation_time):
+        run_api_cycle_with_error_handling(client=client, config=config, logger=logger, now=now)
+        last_calculation_time = now
+        state = load_execution_state(client, config, now=now)
+
+    if state.charger_enabled:
+        logger.debug(
+            "Charger switch '%s' is on but schedule lock has been released.",
+            config.charger_control_switch_entity,
+        )
+        return last_calculation_time
+
+    if not state.schedule_authorized:
+        return last_calculation_time
+
+    if is_schedule_due(state.result_payload, now=now):
+        execute_due_schedule(client=client, config=config, logger=logger)
+
+    return last_calculation_time
+
+
 def run_scheduler(
     *,
     client: HomeAssistantClient,
@@ -202,16 +398,33 @@ def run_scheduler(
     signal.signal(signal.SIGTERM, handle_shutdown)
     signal.signal(signal.SIGINT, handle_shutdown)
 
-    run_api_cycle_with_error_handling(client=client, config=config, logger=logger)
+    startup_time = datetime.now().astimezone().replace(second=0, microsecond=0)
+    run_api_cycle_with_error_handling(
+        client=client,
+        config=config,
+        logger=logger,
+        now=startup_time,
+    )
+    last_calculation_time: datetime | None = startup_time
+    try:
+        state = load_execution_state(client, config, now=startup_time)
+        if (
+            not state.charger_enabled
+            and state.schedule_authorized
+            and is_schedule_due(state.result_payload, now=startup_time)
+        ):
+            execute_due_schedule(client=client, config=config, logger=logger)
+    except HomeAssistantApiError as exc:
+        logger.error("Execution check failed at startup: %s", exc)
 
     while not stop_requested:
         current_time = datetime.now().astimezone()
-        scheduled_time = next_scheduled_run(current_time)
-        logger.info("Next calculation scheduled for %s", scheduled_time.isoformat())
+        logger.info("Next calculation scheduled for %s", next_scheduled_run(current_time).isoformat())
+        next_tick = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
 
         while not stop_requested:
             now = datetime.now().astimezone()
-            remaining = (scheduled_time - now).total_seconds()
+            remaining = (next_tick - now).total_seconds()
             if remaining <= 0:
                 break
             time.sleep(min(remaining, 1))
@@ -219,7 +432,17 @@ def run_scheduler(
         if stop_requested:
             break
 
-        run_api_cycle_with_error_handling(client=client, config=config, logger=logger)
+        tick_time = datetime.now().astimezone().replace(second=0, microsecond=0)
+        try:
+            last_calculation_time = process_minute_tick(
+                client=client,
+                config=config,
+                logger=logger,
+                now=tick_time,
+                last_calculation_time=last_calculation_time,
+            )
+        except HomeAssistantApiError as exc:
+            logger.error("Minute execution tick failed: %s", exc)
 
     return 0
 
@@ -250,12 +473,25 @@ def main() -> int:
             "SUPERVISOR_TOKEN is not available. Home Assistant API integration is disabled."
         )
         return wait_for_shutdown()
-    elif missing_fields:
+    if missing_fields:
         logger.warning("Skipping Home Assistant API cycle until configuration is complete.")
         return wait_for_shutdown()
 
     logger.info("EV Charge Control service is running.")
     return run_scheduler(client=client, config=config, logger=logger)
+
+
+def _parse_switch_state(value: str | float | int | None, field_name: str) -> bool:
+    if value is None:
+        raise HomeAssistantApiError(f"Missing value for '{field_name}'.")
+
+    normalized = str(value).strip().lower()
+    if normalized == "on":
+        return True
+    if normalized == "off":
+        return False
+
+    raise HomeAssistantApiError(f"Invalid switch state for '{field_name}': {value}")
 
 
 if __name__ == "__main__":
