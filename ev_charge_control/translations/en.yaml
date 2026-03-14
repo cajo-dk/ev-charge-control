@@ -32,6 +32,21 @@ configuration:
   pricing_information_entity:
     name: Pricing information entity
     description: Entity ID for the pricing sensor that provides raw_today, raw_tomorrow, and forecast attributes.
-  result_helper_entity:
-    name: Result helper entity
-    description: Entity ID for the input_text helper that stores the latest EVCC calculation result.
+  mqtt_host:
+    name: MQTT host
+    description: Hostname or IP address of the MQTT broker used for EVCC output publishing.
+  mqtt_port:
+    name: MQTT port
+    description: Network port of the MQTT broker used for EVCC output publishing.
+  mqtt_username:
+    name: MQTT username
+    description: Optional username for authenticating to the MQTT broker.
+  mqtt_password:
+    name: MQTT password
+    description: Optional password for authenticating to the MQTT broker.
+  mqtt_discovery_prefix:
+    name: MQTT discovery prefix
+    description: MQTT discovery prefix used by Home Assistant, normally homeassistant.
+  mqtt_topic_prefix:
+    name: MQTT topic prefix
+    description: Base MQTT topic used by EVCC to publish state, attributes, and availability.

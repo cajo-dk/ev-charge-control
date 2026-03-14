@@ -23,7 +23,7 @@ EVCC is intended to calculate an optimal charging start time so that:
 - charging is completed by the configured finish time; and
 - the selected charging window favors the best available electricity prices within those constraints.
 
-The application is expected to read configuration and input data from Home Assistant entities and write its latest calculation result to a configured `input_text` helper as JSON.
+The application reads configuration and input data from Home Assistant entities and publishes its latest result over MQTT as a Home Assistant-discoverable entity. The published entity exposes `status` as state and the remaining EVCC output as attributes.
 
 ## Repository Layout
 
@@ -87,8 +87,9 @@ The repository now includes the baseline files required to package EVCC as a Hom
 - `ev_charge_control/Dockerfile` builds the add-on container and starts the EVCC service.
 - `ev_charge_control/run.sh` starts the Python module inside the add-on container.
 - The add-on uses the internal Home Assistant API proxy and requires `homeassistant_api: true`.
+- The add-on publishes output through MQTT and therefore requires MQTT broker connectivity.
 
-The current implementation can read configured Home Assistant entities and write a placeholder result payload back to the configured `input_text` helper. The charging algorithm itself is not implemented yet.
+The current implementation reads configured Home Assistant entities, calculates charging windows, controls charging execution, and publishes EVCC output through MQTT for Home Assistant consumption.
 
 ## Status
 

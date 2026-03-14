@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
 import signal
@@ -12,10 +11,10 @@ from pathlib import Path
 from typing import Any
 
 from evcc.ha_api import HomeAssistantApiError, HomeAssistantClient
+from evcc.mqtt_output import MQTTOutputPublisher
 from evcc.runtime import (
     build_error_result,
     calculate_result,
-    dump_result_payload,
     load_live_inputs,
     parse_finish_by_value,
     parse_input_boolean_value,
@@ -26,6 +25,9 @@ from evcc.runtime import (
 DEFAULT_OPTIONS_PATH = Path("/data/options.json")
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_HOME_ASSISTANT_API_URL = "http://supervisor/core/api"
+DEFAULT_MQTT_PORT = 1883
+DEFAULT_MQTT_DISCOVERY_PREFIX = "homeassistant"
+DEFAULT_MQTT_TOPIC_PREFIX = "ev_charge_control"
 RUN_MINUTES = (1, 16, 31, 46)
 SUPPORTED_LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}
 
@@ -43,11 +45,16 @@ class AppConfig:
     charger_control_switch_entity: str = ""
     schedule_authorized_entity: str = ""
     pricing_information_entity: str = ""
-    result_helper_entity: str = ""
+    mqtt_host: str = ""
+    mqtt_port: int = DEFAULT_MQTT_PORT
+    mqtt_username: str = ""
+    mqtt_password: str = ""
+    mqtt_discovery_prefix: str = DEFAULT_MQTT_DISCOVERY_PREFIX
+    mqtt_topic_prefix: str = DEFAULT_MQTT_TOPIC_PREFIX
 
     @classmethod
     def from_mapping(cls, raw: dict[str, Any]) -> "AppConfig":
-        normalized = {key: raw.get(key, "") for key in cls.__dataclass_fields__}
+        normalized = {key: raw.get(key, getattr(cls(), key)) for key in cls.__dataclass_fields__}
         log_level = str(normalized.get("log_level", DEFAULT_LOG_LEVEL)).upper()
         if log_level == "TRACE":
             log_level = "DEBUG"
@@ -58,6 +65,7 @@ class AppConfig:
         if log_level not in SUPPORTED_LOG_LEVELS:
             log_level = DEFAULT_LOG_LEVEL
         normalized["log_level"] = log_level
+        normalized["mqtt_port"] = _parse_mqtt_port(normalized.get("mqtt_port", DEFAULT_MQTT_PORT))
         return cls(**normalized)
 
 
@@ -68,13 +76,13 @@ class ExecutionState:
     finish_by: datetime
     charger_enabled: bool
     schedule_authorized: bool
-    result_payload: dict[str, Any] | None
 
 
 @dataclass(slots=True)
 class TickResult:
     last_calculation_time: datetime | None
     soc_at_charge_start: float | None
+    published_payload: dict[str, Any] | None
 
 
 def configure_logging(level: str) -> None:
@@ -87,8 +95,7 @@ def configure_logging(level: str) -> None:
 def load_options(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
-    with path.open("r", encoding="utf-8") as file_handle:
-        return json.load(file_handle)
+    return __import__("json").load(path.open("r", encoding="utf-8"))
 
 
 def validate_config(config: AppConfig) -> list[str]:
@@ -104,10 +111,11 @@ def validate_config(config: AppConfig) -> list[str]:
         "charger_control_switch_entity",
         "schedule_authorized_entity",
         "pricing_information_entity",
-        "result_helper_entity",
+        "mqtt_host",
     )
     for field_name in required_fields:
-        if not getattr(config, field_name).strip():
+        value = getattr(config, field_name)
+        if isinstance(value, str) and not value.strip():
             missing_fields.append(field_name)
     return missing_fields
 
@@ -147,14 +155,27 @@ def create_home_assistant_client() -> HomeAssistantClient | None:
     return HomeAssistantClient(base_url=base_url, token=token)
 
 
+def create_mqtt_publisher(config: AppConfig, logger: logging.Logger) -> MQTTOutputPublisher:
+    return MQTTOutputPublisher(
+        host=config.mqtt_host,
+        port=config.mqtt_port,
+        username=config.mqtt_username or None,
+        password=config.mqtt_password or None,
+        discovery_prefix=config.mqtt_discovery_prefix,
+        topic_prefix=config.mqtt_topic_prefix,
+        logger=logger,
+    )
+
+
 def perform_api_cycle(
     *,
     client: HomeAssistantClient,
+    publisher: MQTTOutputPublisher,
     config: AppConfig,
     logger: logging.Logger,
     now: datetime | None = None,
     soc_at_charge_start: float | None = None,
-) -> None:
+) -> dict[str, Any]:
     current_time = now or datetime.now().astimezone()
     execution_state = load_execution_state(client, config, now=current_time)
     live_inputs = load_live_inputs(client, config)
@@ -187,28 +208,24 @@ def perform_api_cycle(
         target_soc=execution_state.target_soc,
         soc_at_charge_start=soc_at_charge_start,
     )
-    client.set_input_text(
-        config.result_helper_entity,
-        dump_result_payload(output_payload),
-    )
-    logger.info(
-        "Wrote charging result to helper '%s': %s",
-        config.result_helper_entity,
-        output_payload,
-    )
+    publisher.publish_output(output_payload)
+    logger.info("Published charging result over MQTT: %s", output_payload)
+    return output_payload
 
 
 def run_api_cycle_with_error_handling(
     *,
     client: HomeAssistantClient,
+    publisher: MQTTOutputPublisher,
     config: AppConfig,
     logger: logging.Logger,
     now: datetime | None = None,
     soc_at_charge_start: float | None = None,
-) -> None:
+) -> dict[str, Any]:
     try:
-        perform_api_cycle(
+        return perform_api_cycle(
             client=client,
+            publisher=publisher,
             config=config,
             logger=logger,
             now=now,
@@ -216,25 +233,17 @@ def run_api_cycle_with_error_handling(
         )
     except HomeAssistantApiError as exc:
         logger.error("Home Assistant API cycle failed: %s", exc)
-        try:
-            error_payload = build_error_result(str(exc), now=now)
-            output_payload = enrich_payload_from_current_state(
-                client=client,
-                config=config,
-                payload=error_payload,
-                now=now or datetime.now().astimezone(),
-                soc_at_charge_start=soc_at_charge_start,
-            )
-            client.set_input_text(
-                config.result_helper_entity,
-                dump_result_payload(output_payload),
-            )
-            logger.info(
-                "Wrote API error status to helper '%s'.",
-                config.result_helper_entity,
-            )
-        except HomeAssistantApiError as write_exc:
-            logger.error("Failed to write API error status to helper: %s", write_exc)
+        error_payload = build_error_result(str(exc), now=now)
+        output_payload = enrich_payload_from_current_state(
+            client=client,
+            config=config,
+            payload=error_payload,
+            now=now or datetime.now().astimezone(),
+            soc_at_charge_start=soc_at_charge_start,
+        )
+        publisher.publish_output(output_payload)
+        logger.info("Published API error status over MQTT.")
+        return output_payload
 
 
 def should_run_calculation(
@@ -257,61 +266,28 @@ def load_execution_state(
     *,
     now: datetime,
 ) -> ExecutionState:
-    current_soc = parse_percentage_value(
-        client.get_entity_value(config.ev_current_soc_entity),
-        "ev_current_soc",
-    )
-    target_soc = parse_percentage_value(
-        client.get_entity_value(config.target_soc_entity),
-        "target_soc",
-    )
-    finish_by = parse_finish_by_value(
-        client.get_entity_value(config.finish_by_entity),
-        now,
-    )
-    charger_enabled = _parse_switch_state(
-        client.get_entity_value(config.charger_control_switch_entity),
-        "charger_control_switch_entity",
-    )
-    schedule_authorized = parse_input_boolean_value(
-        client.get_entity_value(config.schedule_authorized_entity),
-        "schedule_authorized_entity",
-    )
-    result_payload = load_result_payload(client, config)
     return ExecutionState(
-        current_soc=current_soc,
-        target_soc=target_soc,
-        finish_by=finish_by,
-        charger_enabled=charger_enabled,
-        schedule_authorized=schedule_authorized,
-        result_payload=result_payload,
+        current_soc=parse_percentage_value(
+            client.get_entity_value(config.ev_current_soc_entity),
+            "ev_current_soc",
+        ),
+        target_soc=parse_percentage_value(
+            client.get_entity_value(config.target_soc_entity),
+            "target_soc",
+        ),
+        finish_by=parse_finish_by_value(
+            client.get_entity_value(config.finish_by_entity),
+            now,
+        ),
+        charger_enabled=_parse_switch_state(
+            client.get_entity_value(config.charger_control_switch_entity),
+            "charger_control_switch_entity",
+        ),
+        schedule_authorized=parse_input_boolean_value(
+            client.get_entity_value(config.schedule_authorized_entity),
+            "schedule_authorized_entity",
+        ),
     )
-
-
-def load_result_payload(
-    client: HomeAssistantClient,
-    config: AppConfig,
-) -> dict[str, Any] | None:
-    raw_payload = client.get_entity_value(config.result_helper_entity)
-    if raw_payload is None:
-        return None
-
-    normalized = str(raw_payload).strip()
-    if normalized in {"", "unknown", "unavailable", "none", "null"}:
-        return None
-
-    try:
-        payload = json.loads(normalized)
-    except json.JSONDecodeError as exc:
-        raise HomeAssistantApiError(
-            f"Result helper '{config.result_helper_entity}' did not contain valid JSON."
-        ) from exc
-
-    if not isinstance(payload, dict):
-        raise HomeAssistantApiError(
-            f"Result helper '{config.result_helper_entity}' did not contain a JSON object."
-        )
-    return payload
 
 
 def should_unlock_schedule(state: ExecutionState, *, now: datetime) -> bool:
@@ -380,15 +356,16 @@ def is_schedule_due(result_payload: dict[str, Any] | None, *, now: datetime) -> 
     if status != "ok" or not start or not timestamp:
         return False
 
-    scheduled_start = resolve_schedule_start(start=start, timestamp=timestamp, now=now)
-    return now >= scheduled_start
+    return now >= resolve_schedule_start(start=start, timestamp=timestamp, now=now)
 
 
 def resolve_schedule_start(*, start: str, timestamp: str, now: datetime) -> datetime:
     try:
         created_at = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
     except ValueError as exc:
-        raise HomeAssistantApiError(f"Could not parse result payload timestamp: {timestamp}") from exc
+        raise HomeAssistantApiError(
+            f"Could not parse result payload timestamp: {timestamp}"
+        ) from exc
 
     if created_at.tzinfo is None:
         created_at = created_at.replace(tzinfo=now.tzinfo)
@@ -433,38 +410,39 @@ def execute_due_schedule(
 def process_minute_tick(
     *,
     client: HomeAssistantClient,
+    publisher: MQTTOutputPublisher,
     config: AppConfig,
     logger: logging.Logger,
     now: datetime,
     last_calculation_time: datetime | None,
     soc_at_charge_start: float | None,
+    published_payload: dict[str, Any] | None,
 ) -> TickResult:
     state = load_execution_state(client, config, now=now)
     soc_at_charge_start = _resolve_soc_at_charge_start(
         existing_value=soc_at_charge_start,
+        published_payload=published_payload,
         state=state,
     )
 
     if state.charger_enabled and not should_unlock_schedule(state, now=now):
-        write_runtime_output(
-            client=client,
-            config=config,
+        published_payload = write_runtime_output(
+            publisher=publisher,
             state=state,
             now=now,
             soc_at_charge_start=soc_at_charge_start,
+            published_payload=published_payload,
         )
         logger.info(
             "Charger switch '%s' is on; schedule updates remain locked.",
             config.charger_control_switch_entity,
         )
-        return TickResult(
-            last_calculation_time=last_calculation_time,
-            soc_at_charge_start=soc_at_charge_start,
-        )
+        return TickResult(last_calculation_time, soc_at_charge_start, published_payload)
 
     if should_run_calculation(now, last_calculation_time):
-        run_api_cycle_with_error_handling(
+        published_payload = run_api_cycle_with_error_handling(
             client=client,
+            publisher=publisher,
             config=config,
             logger=logger,
             now=now,
@@ -474,61 +452,53 @@ def process_minute_tick(
         state = load_execution_state(client, config, now=now)
         soc_at_charge_start = _resolve_soc_at_charge_start(
             existing_value=soc_at_charge_start,
+            published_payload=published_payload,
             state=state,
         )
 
     if state.charger_enabled:
-        write_runtime_output(
-            client=client,
-            config=config,
+        published_payload = write_runtime_output(
+            publisher=publisher,
             state=state,
             now=now,
             soc_at_charge_start=soc_at_charge_start,
+            published_payload=published_payload,
         )
         logger.debug(
             "Charger switch '%s' is on but schedule lock has been released.",
             config.charger_control_switch_entity,
         )
-        return TickResult(
-            last_calculation_time=last_calculation_time,
-            soc_at_charge_start=soc_at_charge_start,
-        )
+        return TickResult(last_calculation_time, soc_at_charge_start, published_payload)
 
     if not state.schedule_authorized:
-        write_runtime_output(
-            client=client,
-            config=config,
+        published_payload = write_runtime_output(
+            publisher=publisher,
             state=state,
             now=now,
             soc_at_charge_start=soc_at_charge_start,
+            published_payload=published_payload,
         )
-        return TickResult(
-            last_calculation_time=last_calculation_time,
-            soc_at_charge_start=soc_at_charge_start,
-        )
+        return TickResult(last_calculation_time, soc_at_charge_start, published_payload)
 
-    if is_schedule_due(state.result_payload, now=now):
+    if is_schedule_due(published_payload, now=now):
         soc_at_charge_start = state.current_soc
         execute_due_schedule(client=client, config=config, logger=logger)
         state = load_execution_state(client, config, now=now)
 
-    write_runtime_output(
-        client=client,
-        config=config,
+    published_payload = write_runtime_output(
+        publisher=publisher,
         state=state,
         now=now,
         soc_at_charge_start=soc_at_charge_start,
+        published_payload=published_payload,
     )
-
-    return TickResult(
-        last_calculation_time=last_calculation_time,
-        soc_at_charge_start=soc_at_charge_start,
-    )
+    return TickResult(last_calculation_time, soc_at_charge_start, published_payload)
 
 
 def run_scheduler(
     *,
     client: HomeAssistantClient,
+    publisher: MQTTOutputPublisher,
     config: AppConfig,
     logger: logging.Logger,
 ) -> int:
@@ -541,9 +511,12 @@ def run_scheduler(
     signal.signal(signal.SIGTERM, handle_shutdown)
     signal.signal(signal.SIGINT, handle_shutdown)
 
+    publisher.start()
+
     startup_time = datetime.now().astimezone().replace(second=0, microsecond=0)
-    run_api_cycle_with_error_handling(
+    published_payload = run_api_cycle_with_error_handling(
         client=client,
+        publisher=publisher,
         config=config,
         logger=logger,
         now=startup_time,
@@ -554,22 +527,23 @@ def run_scheduler(
         state = load_execution_state(client, config, now=startup_time)
         soc_at_charge_start = _resolve_soc_at_charge_start(
             existing_value=None,
+            published_payload=published_payload,
             state=state,
         )
         if (
             not state.charger_enabled
             and state.schedule_authorized
-            and is_schedule_due(state.result_payload, now=startup_time)
+            and is_schedule_due(published_payload, now=startup_time)
         ):
             soc_at_charge_start = state.current_soc
             execute_due_schedule(client=client, config=config, logger=logger)
             state = load_execution_state(client, config, now=startup_time)
-        write_runtime_output(
-            client=client,
-            config=config,
+        published_payload = write_runtime_output(
+            publisher=publisher,
             state=state,
             now=startup_time,
             soc_at_charge_start=soc_at_charge_start,
+            published_payload=published_payload,
         )
     except HomeAssistantApiError as exc:
         logger.error("Execution check failed at startup: %s", exc)
@@ -577,7 +551,7 @@ def run_scheduler(
     while not stop_requested:
         current_time = datetime.now().astimezone()
         logger.info("Next calculation scheduled for %s", next_scheduled_run(current_time).isoformat())
-        next_tick = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
+        next_tick = current_time.replace(second=0, microsecond=0) + timedelta(minutes=1)
 
         while not stop_requested:
             now = datetime.now().astimezone()
@@ -593,17 +567,21 @@ def run_scheduler(
         try:
             tick_result = process_minute_tick(
                 client=client,
+                publisher=publisher,
                 config=config,
                 logger=logger,
                 now=tick_time,
                 last_calculation_time=last_calculation_time,
                 soc_at_charge_start=soc_at_charge_start,
+                published_payload=published_payload,
             )
             last_calculation_time = tick_result.last_calculation_time
             soc_at_charge_start = tick_result.soc_at_charge_start
+            published_payload = tick_result.published_payload
         except HomeAssistantApiError as exc:
             logger.error("Minute execution tick failed: %s", exc)
 
+    publisher.stop()
     return 0
 
 
@@ -637,35 +615,32 @@ def main() -> int:
         logger.warning("Skipping Home Assistant API cycle until configuration is complete.")
         return wait_for_shutdown()
 
+    publisher = create_mqtt_publisher(config, logger)
     logger.info("EV Charge Control service is running.")
-    return run_scheduler(client=client, config=config, logger=logger)
+    return run_scheduler(client=client, publisher=publisher, config=config, logger=logger)
 
 
 def _parse_switch_state(value: str | float | int | None, field_name: str) -> bool:
     if value is None:
         raise HomeAssistantApiError(f"Missing value for '{field_name}'.")
-
     normalized = str(value).strip().lower()
     if normalized == "on":
         return True
     if normalized == "off":
         return False
-
     raise HomeAssistantApiError(f"Invalid switch state for '{field_name}': {value}")
 
 
 def _resolve_soc_at_charge_start(
     *,
     existing_value: float | None,
+    published_payload: dict[str, Any] | None,
     state: ExecutionState,
 ) -> float | None:
     if existing_value is not None:
         return existing_value
 
-    payload_value = None
-    if state.result_payload is not None:
-        payload_value = state.result_payload.get("soc_at_charge_start")
-
+    payload_value = None if published_payload is None else published_payload.get("soc_at_charge_start")
     if payload_value in {"", None}:
         return state.current_soc if state.charger_enabled else None
 
@@ -683,15 +658,23 @@ def _format_soc_value(value: float | None) -> float | int | str:
     return round(value, 3)
 
 
+def _parse_mqtt_port(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_MQTT_PORT
+    return parsed if parsed > 0 else DEFAULT_MQTT_PORT
+
+
 def write_runtime_output(
     *,
-    client: HomeAssistantClient,
-    config: AppConfig,
+    publisher: MQTTOutputPublisher,
     state: ExecutionState,
     now: datetime,
     soc_at_charge_start: float | None,
-) -> None:
-    base_payload = state.result_payload or build_error_result("No result payload available.", now=now)
+    published_payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    base_payload = published_payload or build_error_result("No schedule calculated.", now=now)
     output_payload = build_output_payload(
         base_payload,
         finish_by=state.finish_by,
@@ -701,7 +684,8 @@ def write_runtime_output(
         target_soc=state.target_soc,
         soc_at_charge_start=soc_at_charge_start,
     )
-    client.set_input_text(config.result_helper_entity, dump_result_payload(output_payload))
+    publisher.publish_output(output_payload)
+    return output_payload
 
 
 if __name__ == "__main__":

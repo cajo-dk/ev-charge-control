@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.0
+- Replaced the JSON `input_text` output with MQTT-published Home Assistant entity output.
+- Published EVCC `status` as MQTT state and all other EVCC fields as MQTT attributes.
+- Added MQTT broker configuration, discovery publishing, and output-path test coverage.
+
 ## 1.3.0
 - Expanded the EVCC result payload with finish-by, authorization, charger-state, and SoC status fields.
 - Captured the EV SoC at charge start and kept the output aligned with live charging state during execution.
