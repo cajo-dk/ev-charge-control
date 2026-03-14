@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.5
+- Moved the changelog into `ev_charge_control/CHANGELOG.md`.
+- Updated the release rules so future version changes maintain the changelog in the add-on folder.
+
 ## 1.0.4
 - Restricted pricing payload logging to `DEBUG` level only.
 - Kept `INFO` logs focused on compact operational input summaries.

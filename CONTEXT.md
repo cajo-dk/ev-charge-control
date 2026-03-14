@@ -227,7 +227,7 @@ Logging for Release 1 should:
 - Feature work must be documented through the FR process in `doc/features`.
 - Fix deployments must be documented through the fix process in `doc/fixes`.
 - When a change is released at a new fix version, the corresponding `doc/fixes/fix-xxx.md` file must be created or completed before the release commit is pushed or tagged so the fix record is contained in the tagged revision.
-- `ev_charge_control/CHANGELOG.md` must be maintained whenever the application version changes. The top changelog entry must match the version in `ev_charge_control/config.yaml`.
+- `ev_charge_control/CHANGELOG.md` must be maintained whenever the application version changes. The top changelog entry must match the version in `ev_charge_control/config.yaml`, and the changelog must be updated before the release commit is created.
 
 ## 8. Delivery Workflow
 
@@ -239,7 +239,7 @@ The application version format is:
 
 Interpretation and workflow rules are defined in `VERSIONING.md`.
 
-Every version change must also update `ev_charge_control/CHANGELOG.md` so the changelog stays aligned with `ev_charge_control/config.yaml`.
+Every version change must also update `ev_charge_control/CHANGELOG.md` before the release commit is created so the changelog stays aligned with `ev_charge_control/config.yaml` in the tagged commit.
 
 ### 8.2 Features
 
@@ -280,6 +280,7 @@ The following topics are recognized as likely to need refinement after Release 1
 
 | Revision | Date (YYYY.MM.DD) | Notes                                                                                                        |
 | -------- | ----------------- | ------------------------------------------------------------------------------------------------------------ |
+| 1.1.3    | 2026.03.14        | Clarified that the changelog must be updated before the release commit is created, not only before push or tag. |
 | 1.1.2    | 2026.03.14        | Added the requirement to maintain `ev_charge_control/CHANGELOG.md` whenever the application version changes. |
 | 1.1.1    | 2026.03.14        | Clarified that fix documents must be created before pushing and tagging a new fix-level release. |
 | 1.1.0    | 2026.03.13        | Expanded CONTEXT.md to define product context, Release 1 scope, technical direction, and delivery standards. |
