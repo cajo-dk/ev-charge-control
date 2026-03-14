@@ -22,6 +22,8 @@ A fix is a correction or remedy for an identified issue in the application.
 
 Documentation of Releases will be described here later. Release 1 will be the first release and, therefore, subject to the governance in CONTEXT.md
 
+Whenever the application version changes, `ev_charge_control/CHANGELOG.md` must be updated in the same commit. The latest changelog heading must match the version in `ev_charge_control/config.yaml`.
+
 ### 2.2. Feature Requests (FRs)
 
 - When asked to start planning a new feature you must create a FR document in /doc/features with the file name fr-xxx.md - with xxx being the next available non-zero file number in the target folder.
@@ -30,6 +32,7 @@ Documentation of Releases will be described here later. Release 1 will be the fi
 - Replace the comments with your documentation. If there is nothing to document in a specific section, simply write: N/A. You may add additional sections to each document as necessary for the FR.
 - A user must approve the FR before you can start implementing.
 - A feature must be developed in its own Git branch and merged into the main branch when deployed. The branch should be named fr-xxx similar to the FR id.
+- When a feature changes the version number, `ev_charge_control/CHANGELOG.md` must be updated with a condensed summary derived from the relevant FR document(s).
 
 ### 2.3. Fixes
 
@@ -43,5 +46,14 @@ Before a fix-level release is pushed:
 
 - determine the next available fix document number in `doc/fixes`;
 - create and complete the corresponding `fix-xxx.md` document;
+- update `ev_charge_control/CHANGELOG.md` with a condensed summary of the fix;
 - include that document in the release commit; and
 - only then push the commit and create the release tag.
+
+## 3. Changelog Requirements
+
+- The add-on folder must contain `ev_charge_control/CHANGELOG.md`.
+- `ev_charge_control/CHANGELOG.md` must contain entries in descending version order.
+- Each entry must be headed by the version number, for example `## 1.0.4`.
+- Changelog bullets must be short, condensed summaries derived from the corresponding `fr-xxx.md` and `fix-xxx.md` documents.
+- The newest entry in `ev_charge_control/CHANGELOG.md` must always match the version in `ev_charge_control/config.yaml`.
