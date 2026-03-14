@@ -130,7 +130,22 @@ def perform_api_cycle(
     now: datetime | None = None,
 ) -> None:
     live_inputs = load_live_inputs(client, config)
-    logger.info("Loaded live inputs from Home Assistant: %s", live_inputs)
+    logger.info(
+        "Loaded live inputs from Home Assistant: current_soc=%s target_soc=%s "
+        "battery_capacity=%s charger_speed=%s charge_loss=%s finish_by=%s",
+        live_inputs.ev_current_soc,
+        live_inputs.target_soc,
+        live_inputs.ev_battery_capacity,
+        live_inputs.charger_speed,
+        live_inputs.charge_loss,
+        live_inputs.finish_by,
+    )
+    logger.debug(
+        "Loaded pricing payload from Home Assistant: raw_today=%s raw_tomorrow=%s forecast=%s",
+        live_inputs.pricing_information.raw_today,
+        live_inputs.pricing_information.raw_tomorrow,
+        live_inputs.pricing_information.forecast,
+    )
 
     result_payload = calculate_result(live_inputs, now=now)
     client.set_input_text(
