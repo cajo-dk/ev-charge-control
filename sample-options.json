@@ -1,0 +1,11 @@
+{
+  "log_level": "info",
+  "ev_current_soc_entity": "sensor.ev_current_soc",
+  "target_soc_entity": "input_number.ev_target_soc",
+  "ev_battery_capacity_entity": "sensor.ev_battery_capacity",
+  "charger_speed_entity": "sensor.ev_charger_power",
+  "charge_loss_entity": "input_number.ev_charge_loss",
+  "finish_by_entity": "input_datetime.ev_finish_by",
+  "pricing_information_entity": "sensor.electricity_prices",
+  "result_helper_entity": "input_text.evcc_result"
+}

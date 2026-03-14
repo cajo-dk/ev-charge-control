@@ -1,0 +1,28 @@
+configuration:
+  log_level:
+    name: Log level
+    description: Controls how much information EV Charge Control writes to the logs.
+  ev_current_soc_entity:
+    name: EV current SoC entity
+    description: Entity ID for the sensor that exposes the EV's current state of charge.
+  target_soc_entity:
+    name: Target SoC entity
+    description: Entity ID for the sensor or helper that stores the desired target state of charge.
+  ev_battery_capacity_entity:
+    name: EV battery capacity entity
+    description: Entity ID for the sensor that exposes the EV battery capacity in kWh.
+  charger_speed_entity:
+    name: Charger speed entity
+    description: Entity ID for the sensor that exposes charger power in kW.
+  charge_loss_entity:
+    name: Charge loss entity
+    description: Entity ID for the sensor or helper that stores expected charging loss in percent.
+  finish_by_entity:
+    name: Finish-by entity
+    description: Entity ID for the sensor or helper that stores the required charging completion time.
+  pricing_information_entity:
+    name: Pricing information entity
+    description: Entity ID for the pricing sensor that provides raw_today, raw_tomorrow, and forecast attributes.
+  result_helper_entity:
+    name: Result helper entity
+    description: Entity ID for the input_text helper that stores the latest EVCC calculation result.

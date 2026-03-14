@@ -29,6 +29,10 @@ The application is expected to read configuration and input data from Home Assis
 
 - `CONTEXT.md`: authoritative product and release context for this repository.
 - `VERSIONING.md`: rules for `release.feature.fix` versioning and documentation workflow.
+- `config.yaml`: Home Assistant add-on metadata and configuration schema.
+- `build.yaml`: architecture-specific Home Assistant base image configuration.
+- `Dockerfile`: add-on container build definition.
+- `src/evcc/`: Python application package for the EVCC service.
 - `doc/fr-xxx.md`: template for feature request planning.
 - `doc/fix-xxx.md`: template for documenting deployed fixes.
 - `doc/features/`: approved and tracked feature request documents.
@@ -52,6 +56,36 @@ Feature work and fix work are documented separately.
 - A virtual environment should be used for development.
 - Frontend work, if introduced, should use TypeScript unless explicitly approved otherwise.
 - Secrets and configuration values should not be committed.
+
+## Local Setup
+
+Create and activate the virtual environment:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -e .[dev]
+```
+
+Run the service locally:
+
+```powershell
+$env:OPTIONS_PATH = ".\sample-options.json"
+python -m evcc
+```
+
+## Home Assistant Add-on Packaging
+
+The repository now includes the baseline files required to package EVCC as a Home Assistant add-on:
+
+- `config.yaml` defines add-on metadata and user-configurable options.
+- `build.yaml` selects the Home Assistant Python base images per architecture.
+- `Dockerfile` builds the add-on container and starts the EVCC service.
+- `run.sh` starts the Python module inside the add-on container.
+- The add-on uses the internal Home Assistant API proxy and requires `homeassistant_api: true`.
+
+The current implementation can read configured Home Assistant entities and write a placeholder result payload back to the configured `input_text` helper. The charging algorithm itself is not implemented yet.
 
 ## Status
 
