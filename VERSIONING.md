@@ -35,4 +35,13 @@ Documentation of Releases will be described here later. Release 1 will be the fi
 
 Fixes are registered in /doc/fixes and are numbered and named fix-xxx.md - and they are documented when deployed by filling out a template /doc/fix-xxx.md and placing it in the /doc/fixes folder.
 
+When code is released at a new fix level, the matching `doc/fixes/fix-xxx.md` document must be created before pushing the release commit and before creating the release tag. The fix document is therefore part of the tagged release contents.
+
 When asked to start work on a fix, you must check out a branch with the same name as the fix, and you must merge it back into the main branch on deployment.
+
+Before a fix-level release is pushed:
+
+- determine the next available fix document number in `doc/fixes`;
+- create and complete the corresponding `fix-xxx.md` document;
+- include that document in the release commit; and
+- only then push the commit and create the release tag.

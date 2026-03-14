@@ -226,6 +226,7 @@ Logging for Release 1 should:
 - Documentation must evolve with the code when behavior, workflow, or configuration changes.
 - Feature work must be documented through the FR process in `doc/features`.
 - Fix deployments must be documented through the fix process in `doc/fixes`.
+- When a change is released at a new fix version, the corresponding `doc/fixes/fix-xxx.md` file must be created or completed before the release commit is pushed or tagged so the fix record is contained in the tagged revision.
 
 ## 8. Delivery Workflow
 
@@ -246,6 +247,7 @@ Interpretation and workflow rules are defined in `VERSIONING.md`.
 
 - Fix work must be documented using the `doc/fix-xxx.md` template when deployed.
 - Fix work must be implemented on a branch named after the fix, for example `fix-001`.
+- If the code is being committed at a new fix level, the matching `fix-xxx.md` document must be created before the commit is pushed and before the release tag is created.
 
 ### 8.4 Releases
 
@@ -275,5 +277,6 @@ The following topics are recognized as likely to need refinement after Release 1
 
 | Revision | Date (YYYY.MM.DD) | Notes                                                                                                        |
 | -------- | ----------------- | ------------------------------------------------------------------------------------------------------------ |
+| 1.1.1    | 2026.03.14        | Clarified that fix documents must be created before pushing and tagging a new fix-level release. |
 | 1.1.0    | 2026.03.13        | Expanded CONTEXT.md to define product context, Release 1 scope, technical direction, and delivery standards. |
 | 1.0.0    | 2026.03.13        | First version.                                                                                               |
