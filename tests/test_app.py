@@ -32,6 +32,7 @@ class DummyClient:
             "input_number.ev_charge_loss": "10",
             "input_datetime.ev_finish_by": "06:30",
             "input_boolean.nighttime_charging_only": "off",
+            "binary_sensor.ev_cable_connected": "on",
             "switch.ev_charger_control": "off",
             "input_boolean.schedule_authorized": "off",
         }
@@ -75,6 +76,14 @@ class DummyClient:
         self.actions.append(("turn_on_switch", entity_id))
         self.entity_values[entity_id] = "on"
 
+    def turn_off_switch(self, entity_id: str) -> None:
+        self.actions.append(("turn_off_switch", entity_id))
+        self.entity_values[entity_id] = "off"
+
+    def turn_on_input_boolean(self, entity_id: str) -> None:
+        self.actions.append(("turn_on_input_boolean", entity_id))
+        self.entity_values[entity_id] = "on"
+
     def turn_off_input_boolean(self, entity_id: str) -> None:
         self.actions.append(("turn_off_input_boolean", entity_id))
         self.entity_values[entity_id] = "off"
@@ -98,6 +107,7 @@ def build_config() -> AppConfig:
             "charge_loss_entity": "input_number.ev_charge_loss",
             "finish_by_entity": "input_datetime.ev_finish_by",
             "nighttime_charging_only_entity": "input_boolean.nighttime_charging_only",
+            "cable_connected_entity": "binary_sensor.ev_cable_connected",
             "charger_control_switch_entity": "switch.ev_charger_control",
             "schedule_authorized_entity": "input_boolean.schedule_authorized",
             "pricing_information_entity": "sensor.electricity_prices",
@@ -121,6 +131,7 @@ def test_validate_config_reports_missing_required_fields() -> None:
     missing_fields = validate_config(AppConfig())
     assert "ev_current_soc_entity" in missing_fields
     assert "nighttime_charging_only_entity" in missing_fields
+    assert "cable_connected_entity" in missing_fields
     assert "charger_control_switch_entity" in missing_fields
     assert "schedule_authorized_entity" in missing_fields
     assert "mqtt_host" in missing_fields
@@ -153,6 +164,9 @@ def test_perform_api_cycle_publishes_result() -> None:
     assert payload["soc_at_charge_start"] == ""
     assert payload["current_soc"] == 20
     assert payload["target_soc"] == 80
+    assert payload["cable_state"] == "Plugged"
+    assert payload["charge_window_state"] == "Not Reached"
+    assert payload["lock_calculation"] is False
 
 
 def test_api_error_preserves_explicit_exception_type() -> None:
@@ -239,6 +253,7 @@ def test_build_output_payload_adds_runtime_fields() -> None:
     assert payload["soc_at_charge_start"] == ""
     assert payload["current_soc"] == 47
     assert payload["target_soc"] == 100
+    assert payload["lock_calculation"] is False
 
 
 def test_process_minute_tick_turns_on_switch_and_disables_authorization() -> None:
@@ -269,12 +284,15 @@ def test_process_minute_tick_turns_on_switch_and_disables_authorization() -> Non
         published_payload=publisher.outputs[-1],
     )
     assert client.actions == [
-        ("turn_on_switch", "switch.ev_charger_control"),
         ("turn_off_input_boolean", "input_boolean.schedule_authorized"),
+        ("turn_on_switch", "switch.ev_charger_control"),
     ]
     assert publisher.outputs[-1]["authorization_enabled"] is False
     assert publisher.outputs[-1]["charger_enabled"] is True
     assert publisher.outputs[-1]["soc_at_charge_start"] == 20
+    assert publisher.outputs[-1]["status"] == "OK"
+    assert publisher.outputs[-1]["charge_window_state"] == "In Window"
+    assert publisher.outputs[-1]["lock_calculation"] is True
 
 
 def test_process_minute_tick_does_not_execute_when_authorization_is_off() -> None:
@@ -300,6 +318,7 @@ def test_process_minute_tick_does_not_execute_when_authorization_is_off() -> Non
 
     assert client.actions == []
     assert publisher.outputs[-1]["authorization_enabled"] is False
+    assert publisher.outputs[-1]["status"] == "WARN"
 
 
 def test_process_minute_tick_raises_for_invalid_authorization_helper() -> None:
@@ -326,6 +345,7 @@ def test_process_minute_tick_skips_calculation_while_locked() -> None:
     client = DummyClient()
     publisher = DummyPublisher()
     client.entity_values["switch.ev_charger_control"] = "on"
+    client.entity_values["input_boolean.schedule_authorized"] = "on"
     result = process_minute_tick(
         client=client,
         publisher=publisher,
@@ -334,12 +354,19 @@ def test_process_minute_tick_skips_calculation_while_locked() -> None:
         now=datetime.fromisoformat("2026-03-14T00:16:00+01:00"),
         last_calculation_time=datetime.fromisoformat("2026-03-14T00:01:00+01:00"),
         soc_at_charge_start=19.0,
-        published_payload={"status": "ok", "start": "00:15", "timestamp": "2026-03-14T00:01:00+01:00"},
+        published_payload={
+            "status": "OK",
+            "start": "00:15",
+            "end": "05:00",
+            "timestamp": "2026-03-14T00:01:00+01:00",
+            "lock_calculation": True,
+        },
     )
     assert result.last_calculation_time == datetime.fromisoformat("2026-03-14T00:01:00+01:00")
     assert result.soc_at_charge_start == 19.0
     assert publisher.outputs[-1]["soc_at_charge_start"] == 19
     assert publisher.outputs[-1]["charger_enabled"] is True
+    assert publisher.outputs[-1]["status"] == "OK"
 
 
 def test_process_minute_tick_recalculates_when_lock_releases_at_target_soc() -> None:
@@ -357,10 +384,21 @@ def test_process_minute_tick_recalculates_when_lock_releases_at_target_soc() -> 
         now=datetime.fromisoformat("2026-03-14T00:16:00+01:00"),
         last_calculation_time=datetime.fromisoformat("2026-03-14T00:01:00+01:00"),
         soc_at_charge_start=20.0,
-        published_payload={"status": "ok", "start": "00:15", "timestamp": "2026-03-14T00:01:00+01:00"},
+        published_payload={
+            "status": "OK",
+            "start": "00:15",
+            "end": "05:00",
+            "timestamp": "2026-03-14T00:01:00+01:00",
+        },
     )
 
     assert result.last_calculation_time == datetime.fromisoformat("2026-03-14T00:16:00+01:00")
     assert publisher.outputs
+    assert ("turn_on_input_boolean", "input_boolean.schedule_authorized") in client.actions
+    assert ("turn_off_switch", "switch.ev_charger_control") in client.actions
     assert publisher.outputs[-1]["current_soc"] == 80
     assert publisher.outputs[-1]["target_soc"] == 80
+    assert publisher.outputs[-1]["authorization_enabled"] is True
+    assert publisher.outputs[-1]["charger_enabled"] is False
+    assert publisher.outputs[-1]["status"] == "OK"
+    assert publisher.outputs[-1]["lock_calculation"] is False

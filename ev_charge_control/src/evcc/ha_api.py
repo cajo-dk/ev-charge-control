@@ -49,6 +49,20 @@ class HomeAssistantClient:
             payload={"entity_id": entity_id},
         )
 
+    def turn_off_switch(self, entity_id: str) -> None:
+        self._request_json(
+            "/services/switch/turn_off",
+            method="POST",
+            payload={"entity_id": entity_id},
+        )
+
+    def turn_on_input_boolean(self, entity_id: str) -> None:
+        self._request_json(
+            "/services/input_boolean/turn_on",
+            method="POST",
+            payload={"entity_id": entity_id},
+        )
+
     def turn_off_input_boolean(self, entity_id: str) -> None:
         self._request_json(
             "/services/input_boolean/turn_off",

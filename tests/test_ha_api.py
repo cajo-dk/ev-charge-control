@@ -77,6 +77,46 @@ def test_turn_on_switch_posts_expected_payload(monkeypatch: pytest.MonkeyPatch) 
     assert captured["body"]["entity_id"] == "switch.ev_charger_control"
 
 
+def test_turn_off_switch_posts_expected_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["method"] = request.get_method()
+        captured["url"] = request.full_url
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return DummyResponse("[]")
+
+    monkeypatch.setattr("evcc.ha_api.request.urlopen", fake_urlopen)
+    client = HomeAssistantClient(base_url="http://example/api", token="secret")
+
+    client.turn_off_switch("switch.ev_charger_control")
+
+    assert captured["method"] == "POST"
+    assert captured["url"].endswith("/services/switch/turn_off")
+    assert captured["body"]["entity_id"] == "switch.ev_charger_control"
+
+
+def test_turn_on_input_boolean_posts_expected_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["method"] = request.get_method()
+        captured["url"] = request.full_url
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return DummyResponse("[]")
+
+    monkeypatch.setattr("evcc.ha_api.request.urlopen", fake_urlopen)
+    client = HomeAssistantClient(base_url="http://example/api", token="secret")
+
+    client.turn_on_input_boolean("input_boolean.schedule_authorized")
+
+    assert captured["method"] == "POST"
+    assert captured["url"].endswith("/services/input_boolean/turn_on")
+    assert captured["body"]["entity_id"] == "input_boolean.schedule_authorized"
+
+
 def test_turn_off_input_boolean_posts_expected_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.0
+- Implemented the charging execution state machine from the spreadsheet-derived specification.
+- Added a required cable-connected input and derived cable/window/runtime control state on each minute tick.
+- Applied explicit state-machine actions for authorization, charger control, status, and calculation locking with full test coverage.
+
 ## 1.4.0
 - Replaced the JSON `input_text` output with MQTT-published Home Assistant entity output.
 - Published EVCC `status` as MQTT state and all other EVCC fields as MQTT attributes.

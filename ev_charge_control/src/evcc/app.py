@@ -20,6 +20,16 @@ from evcc.runtime import (
     parse_input_boolean_value,
     parse_percentage_value,
 )
+from evcc.state_machine import (
+    CABLE_PLUGGED,
+    CABLE_UNPLUGGED,
+    WINDOW_IN_WINDOW,
+    WINDOW_NOT_REACHED,
+    WINDOW_PAST_WINDOW,
+    StateMachineContext,
+    StateMachineDecision,
+    evaluate_state_machine,
+)
 
 
 DEFAULT_OPTIONS_PATH = Path("/data/options.json")
@@ -42,6 +52,7 @@ class AppConfig:
     charge_loss_entity: str = ""
     finish_by_entity: str = ""
     nighttime_charging_only_entity: str = ""
+    cable_connected_entity: str = ""
     charger_control_switch_entity: str = ""
     schedule_authorized_entity: str = ""
     pricing_information_entity: str = ""
@@ -71,6 +82,7 @@ class AppConfig:
 
 @dataclass(slots=True)
 class ExecutionState:
+    cable: str
     current_soc: float
     target_soc: float
     finish_by: datetime
@@ -108,6 +120,7 @@ def validate_config(config: AppConfig) -> list[str]:
         "charge_loss_entity",
         "finish_by_entity",
         "nighttime_charging_only_entity",
+        "cable_connected_entity",
         "charger_control_switch_entity",
         "schedule_authorized_entity",
         "pricing_information_entity",
@@ -207,6 +220,9 @@ def perform_api_cycle(
         current_soc=execution_state.current_soc,
         target_soc=execution_state.target_soc,
         soc_at_charge_start=soc_at_charge_start,
+        cable_state=execution_state.cable,
+        charge_window_state=derive_charge_window(result_payload, now=current_time),
+        lock_calculation=False,
     )
     publisher.publish_output(output_payload)
     logger.info("Published charging result over MQTT: %s", output_payload)
@@ -267,6 +283,10 @@ def load_execution_state(
     now: datetime,
 ) -> ExecutionState:
     return ExecutionState(
+        cable=_parse_cable_state(
+            client.get_entity_value(config.cable_connected_entity),
+            "cable_connected_entity",
+        ),
         current_soc=parse_percentage_value(
             client.get_entity_value(config.ev_current_soc_entity),
             "ev_current_soc",
@@ -294,6 +314,53 @@ def should_unlock_schedule(state: ExecutionState, *, now: datetime) -> bool:
     return state.current_soc >= state.target_soc or now >= state.finish_by
 
 
+def derive_charge_window(
+    published_payload: dict[str, Any] | None,
+    *,
+    now: datetime,
+) -> str | None:
+    if not published_payload:
+        return None
+
+    start = str(published_payload.get("start", "")).strip()
+    end = str(published_payload.get("end", "")).strip()
+    timestamp = str(published_payload.get("timestamp", "")).strip()
+    if not start or not end or not timestamp:
+        return None
+
+    start_at = resolve_schedule_start(start=start, timestamp=timestamp, now=now)
+    end_at = resolve_schedule_end(
+        start=start,
+        end=end,
+        timestamp=timestamp,
+        now=now,
+    )
+    if now < start_at:
+        return WINDOW_NOT_REACHED
+    if now <= end_at:
+        return WINDOW_IN_WINDOW
+    return WINDOW_PAST_WINDOW
+
+
+def evaluate_runtime_state(
+    *,
+    state: ExecutionState,
+    now: datetime,
+    published_payload: dict[str, Any] | None,
+) -> tuple[StateMachineDecision, str | None]:
+    charge_window = derive_charge_window(published_payload, now=now)
+    decision = evaluate_state_machine(
+        StateMachineContext(
+            cable=state.cable,
+            authorized=state.schedule_authorized,
+            charging=state.charger_enabled,
+            soc_reached=state.current_soc >= state.target_soc,
+            charge_window=charge_window,
+        )
+    )
+    return decision, charge_window
+
+
 def build_output_payload(
     payload: dict[str, Any],
     *,
@@ -303,14 +370,27 @@ def build_output_payload(
     current_soc: float | None,
     target_soc: float | None,
     soc_at_charge_start: float | None,
+    cable_state: str | None = None,
+    charge_window_state: str | None = None,
+    lock_calculation: bool | None = None,
+    status: str | None = None,
 ) -> dict[str, Any]:
     output_payload = dict(payload)
+    if status is not None:
+        output_payload["status"] = status
     output_payload["complete_by"] = finish_by.strftime("%H:%M") if finish_by else ""
     output_payload["authorization_enabled"] = schedule_authorized
     output_payload["charger_enabled"] = charger_enabled
     output_payload["soc_at_charge_start"] = _format_soc_value(soc_at_charge_start)
     output_payload["current_soc"] = _format_soc_value(current_soc)
     output_payload["target_soc"] = _format_soc_value(target_soc)
+    output_payload["cable_state"] = cable_state or ""
+    output_payload["charge_window_state"] = charge_window_state or ""
+    output_payload["lock_calculation"] = (
+        lock_calculation
+        if lock_calculation is not None
+        else bool(output_payload.get("lock_calculation", False))
+    )
     return output_payload
 
 
@@ -333,8 +413,12 @@ def enrich_payload_from_current_state(
             current_soc=None,
             target_soc=None,
             soc_at_charge_start=soc_at_charge_start,
+            cable_state=None,
+            charge_window_state=None,
+            lock_calculation=False,
         )
 
+    charge_window = derive_charge_window(payload, now=now)
     return build_output_payload(
         payload,
         finish_by=state.finish_by,
@@ -343,6 +427,9 @@ def enrich_payload_from_current_state(
         current_soc=state.current_soc,
         target_soc=state.target_soc,
         soc_at_charge_start=soc_at_charge_start,
+        cable_state=state.cable,
+        charge_window_state=charge_window,
+        lock_calculation=bool(payload.get("lock_calculation", False)),
     )
 
 
@@ -350,10 +437,9 @@ def is_schedule_due(result_payload: dict[str, Any] | None, *, now: datetime) -> 
     if not result_payload:
         return False
 
-    status = str(result_payload.get("status", "")).strip().lower()
     start = str(result_payload.get("start", "")).strip()
     timestamp = str(result_payload.get("timestamp", "")).strip()
-    if status != "ok" or not start or not timestamp:
+    if not start or not timestamp:
         return False
 
     return now >= resolve_schedule_start(start=start, timestamp=timestamp, now=now)
@@ -392,6 +478,44 @@ def resolve_schedule_start(*, start: str, timestamp: str, now: datetime) -> date
     return scheduled_start
 
 
+def resolve_schedule_end(*, start: str, end: str, timestamp: str, now: datetime) -> datetime:
+    start_at = resolve_schedule_start(start=start, timestamp=timestamp, now=now)
+    end_at = _resolve_schedule_clock(end=end, timestamp=timestamp, now=now)
+    if end_at <= start_at:
+        end_at += timedelta(days=1)
+    return end_at
+
+
+def _resolve_schedule_clock(*, end: str, timestamp: str, now: datetime) -> datetime:
+    try:
+        created_at = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HomeAssistantApiError(
+            f"Could not parse result payload timestamp: {timestamp}"
+        ) from exc
+
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=now.tzinfo)
+    created_at = created_at.astimezone(now.tzinfo)
+
+    parsed_end: datetime | None = None
+    for fmt in ("%H:%M", "%H:%M:%S"):
+        try:
+            parsed_end = datetime.strptime(end, fmt)
+            break
+        except ValueError:
+            continue
+    if parsed_end is None:
+        raise HomeAssistantApiError(f"Could not parse result payload end time: {end}")
+
+    return created_at.replace(
+        hour=parsed_end.hour,
+        minute=parsed_end.minute,
+        second=0,
+        microsecond=0,
+    )
+
+
 def execute_due_schedule(
     *,
     client: HomeAssistantClient,
@@ -405,6 +529,37 @@ def execute_due_schedule(
         config.charger_control_switch_entity,
         config.schedule_authorized_entity,
     )
+
+
+def apply_state_machine_decision(
+    *,
+    client: HomeAssistantClient,
+    config: AppConfig,
+    state: ExecutionState,
+    decision: StateMachineDecision,
+    logger: logging.Logger,
+) -> bool:
+    state_changed = False
+
+    if decision.set_authorized is True and not state.schedule_authorized:
+        client.turn_on_input_boolean(config.schedule_authorized_entity)
+        logger.info("State machine re-enabled authorization helper '%s'.", config.schedule_authorized_entity)
+        state_changed = True
+    elif decision.set_authorized is False and state.schedule_authorized:
+        client.turn_off_input_boolean(config.schedule_authorized_entity)
+        logger.info("State machine disabled authorization helper '%s'.", config.schedule_authorized_entity)
+        state_changed = True
+
+    if decision.set_charging is True and not state.charger_enabled:
+        client.turn_on_switch(config.charger_control_switch_entity)
+        logger.info("State machine enabled charger switch '%s'.", config.charger_control_switch_entity)
+        state_changed = True
+    elif decision.set_charging is False and state.charger_enabled:
+        client.turn_off_switch(config.charger_control_switch_entity)
+        logger.info("State machine disabled charger switch '%s'.", config.charger_control_switch_entity)
+        state_changed = True
+
+    return state_changed
 
 
 def process_minute_tick(
@@ -425,21 +580,42 @@ def process_minute_tick(
         state=state,
     )
 
-    if state.charger_enabled and not should_unlock_schedule(state, now=now):
-        published_payload = write_runtime_output(
-            publisher=publisher,
+    previous_status = str((published_payload or {}).get("status", "OK"))
+    previous_lock = bool((published_payload or {}).get("lock_calculation", False))
+
+    decision, charge_window = evaluate_runtime_state(
+        state=state,
+        now=now,
+        published_payload=published_payload,
+    )
+    effective_status = decision.status or previous_status
+    effective_lock = (
+        decision.lock_calculation
+        if decision.lock_calculation is not None
+        else previous_lock
+    )
+    state_changed = apply_state_machine_decision(
+        client=client,
+        config=config,
+        state=state,
+        decision=decision,
+        logger=logger,
+    )
+    if state_changed:
+        state = load_execution_state(client, config, now=now)
+        if decision.set_charging is True:
+            soc_at_charge_start = state.current_soc
+        reloaded_decision, charge_window = evaluate_runtime_state(
             state=state,
             now=now,
-            soc_at_charge_start=soc_at_charge_start,
             published_payload=published_payload,
         )
-        logger.info(
-            "Charger switch '%s' is on; schedule updates remain locked.",
-            config.charger_control_switch_entity,
-        )
-        return TickResult(last_calculation_time, soc_at_charge_start, published_payload)
+        if reloaded_decision.status is not None:
+            effective_status = reloaded_decision.status
+        if reloaded_decision.lock_calculation is not None:
+            effective_lock = reloaded_decision.lock_calculation
 
-    if should_run_calculation(now, last_calculation_time):
+    if not effective_lock and should_run_calculation(now, last_calculation_time):
         published_payload = run_api_cycle_with_error_handling(
             client=client,
             publisher=publisher,
@@ -455,35 +631,39 @@ def process_minute_tick(
             published_payload=published_payload,
             state=state,
         )
-
-    if state.charger_enabled:
-        published_payload = write_runtime_output(
-            publisher=publisher,
+        previous_status = str((published_payload or {}).get("status", effective_status))
+        previous_lock = bool((published_payload or {}).get("lock_calculation", effective_lock))
+        decision, charge_window = evaluate_runtime_state(
             state=state,
             now=now,
-            soc_at_charge_start=soc_at_charge_start,
             published_payload=published_payload,
         )
-        logger.debug(
-            "Charger switch '%s' is on but schedule lock has been released.",
-            config.charger_control_switch_entity,
+        effective_status = decision.status or previous_status
+        effective_lock = (
+            decision.lock_calculation
+            if decision.lock_calculation is not None
+            else previous_lock
         )
-        return TickResult(last_calculation_time, soc_at_charge_start, published_payload)
-
-    if not state.schedule_authorized:
-        published_payload = write_runtime_output(
-            publisher=publisher,
+        state_changed = apply_state_machine_decision(
+            client=client,
+            config=config,
             state=state,
-            now=now,
-            soc_at_charge_start=soc_at_charge_start,
-            published_payload=published_payload,
+            decision=decision,
+            logger=logger,
         )
-        return TickResult(last_calculation_time, soc_at_charge_start, published_payload)
-
-    if is_schedule_due(published_payload, now=now):
-        soc_at_charge_start = state.current_soc
-        execute_due_schedule(client=client, config=config, logger=logger)
-        state = load_execution_state(client, config, now=now)
+        if state_changed:
+            state = load_execution_state(client, config, now=now)
+            if decision.set_charging is True:
+                soc_at_charge_start = state.current_soc
+            reloaded_decision, charge_window = evaluate_runtime_state(
+                state=state,
+                now=now,
+                published_payload=published_payload,
+            )
+            if reloaded_decision.status is not None:
+                effective_status = reloaded_decision.status
+            if reloaded_decision.lock_calculation is not None:
+                effective_lock = reloaded_decision.lock_calculation
 
     published_payload = write_runtime_output(
         publisher=publisher,
@@ -491,6 +671,10 @@ def process_minute_tick(
         now=now,
         soc_at_charge_start=soc_at_charge_start,
         published_payload=published_payload,
+        status=effective_status,
+        lock_calculation=effective_lock,
+        cable_state=state.cable,
+        charge_window_state=charge_window,
     )
     return TickResult(last_calculation_time, soc_at_charge_start, published_payload)
 
@@ -631,6 +815,17 @@ def _parse_switch_state(value: str | float | int | None, field_name: str) -> boo
     raise HomeAssistantApiError(f"Invalid switch state for '{field_name}': {value}")
 
 
+def _parse_cable_state(value: str | float | int | None, field_name: str) -> str:
+    if value is None:
+        raise HomeAssistantApiError(f"Missing value for '{field_name}'.")
+    normalized = str(value).strip().lower()
+    if normalized in {"on", "plugged", "connected", "true", "yes", "1"}:
+        return CABLE_PLUGGED
+    if normalized in {"off", "unplugged", "disconnected", "false", "no", "0"}:
+        return CABLE_UNPLUGGED
+    raise HomeAssistantApiError(f"Invalid cable state for '{field_name}': {value}")
+
+
 def _resolve_soc_at_charge_start(
     *,
     existing_value: float | None,
@@ -673,6 +868,10 @@ def write_runtime_output(
     now: datetime,
     soc_at_charge_start: float | None,
     published_payload: dict[str, Any] | None,
+    status: str | None = None,
+    lock_calculation: bool | None = None,
+    cable_state: str | None = None,
+    charge_window_state: str | None = None,
 ) -> dict[str, Any]:
     base_payload = published_payload or build_error_result("No schedule calculated.", now=now)
     output_payload = build_output_payload(
@@ -683,6 +882,10 @@ def write_runtime_output(
         current_soc=state.current_soc,
         target_soc=state.target_soc,
         soc_at_charge_start=soc_at_charge_start,
+        cable_state=cable_state,
+        charge_window_state=charge_window_state,
+        lock_calculation=lock_calculation,
+        status=status,
     )
     publisher.publish_output(output_payload)
     return output_payload
