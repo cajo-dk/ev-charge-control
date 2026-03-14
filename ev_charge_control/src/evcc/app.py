@@ -36,6 +36,7 @@ class AppConfig:
     charger_speed_entity: str = ""
     charge_loss_entity: str = ""
     finish_by_entity: str = ""
+    nighttime_charging_only_entity: str = ""
     pricing_information_entity: str = ""
     result_helper_entity: str = ""
 
@@ -78,6 +79,7 @@ def validate_config(config: AppConfig) -> list[str]:
         "charger_speed_entity",
         "charge_loss_entity",
         "finish_by_entity",
+        "nighttime_charging_only_entity",
         "pricing_information_entity",
         "result_helper_entity",
     )
@@ -132,13 +134,15 @@ def perform_api_cycle(
     live_inputs = load_live_inputs(client, config)
     logger.info(
         "Loaded live inputs from Home Assistant: current_soc=%s target_soc=%s "
-        "battery_capacity=%s charger_speed=%s charge_loss=%s finish_by=%s",
+        "battery_capacity=%s charger_speed=%s charge_loss=%s finish_by=%s "
+        "nighttime_charging_only=%s",
         live_inputs.ev_current_soc,
         live_inputs.target_soc,
         live_inputs.ev_battery_capacity,
         live_inputs.charger_speed,
         live_inputs.charge_loss,
         live_inputs.finish_by,
+        live_inputs.nighttime_charging_only,
     )
     logger.debug(
         "Loaded pricing payload from Home Assistant: raw_today=%s raw_tomorrow=%s forecast=%s",

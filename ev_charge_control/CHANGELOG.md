@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.0
+- Added the Nighttime Charging Only helper to control whether charging may start only after the next midnight.
+- Extended the calculator to enforce the overnight-only restriction without falling back to unrestricted scheduling.
+- Added validation and test coverage for the new helper-driven scheduling behavior.
+
 ## 1.0.7
 - Repaired the release history so the changelog now matches the version shown in Home Assistant.
 - Ensured the changelog is aligned with the new tagged release version.

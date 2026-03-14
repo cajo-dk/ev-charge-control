@@ -27,6 +27,7 @@ class DummyClient:
             "sensor.ev_charger_power": "11",
             "input_number.ev_charge_loss": "10",
             "input_datetime.ev_finish_by": "06:30",
+            "input_boolean.nighttime_charging_only": "off",
         }[entity_id]
 
     def get_state(self, entity_id: str) -> dict:
@@ -78,6 +79,7 @@ def test_load_options_returns_empty_mapping_for_missing_file(tmp_path: Path) -> 
 def test_validate_config_reports_missing_required_fields() -> None:
     missing_fields = validate_config(AppConfig())
     assert "ev_current_soc_entity" in missing_fields
+    assert "nighttime_charging_only_entity" in missing_fields
     assert "result_helper_entity" in missing_fields
 
 
@@ -98,6 +100,7 @@ def test_perform_api_cycle_writes_placeholder_result(caplog) -> None:
             "charger_speed_entity": "sensor.ev_charger_power",
             "charge_loss_entity": "input_number.ev_charge_loss",
             "finish_by_entity": "input_datetime.ev_finish_by",
+            "nighttime_charging_only_entity": "input_boolean.nighttime_charging_only",
             "pricing_information_entity": "sensor.electricity_prices",
             "result_helper_entity": "input_text.evcc_result",
         }
@@ -143,6 +146,7 @@ def test_run_api_cycle_with_error_handling_writes_error_result() -> None:
             "charger_speed_entity": "sensor.ev_charger_power",
             "charge_loss_entity": "input_number.ev_charge_loss",
             "finish_by_entity": "input_datetime.ev_finish_by",
+            "nighttime_charging_only_entity": "input_boolean.nighttime_charging_only",
             "pricing_information_entity": "sensor.electricity_prices",
             "result_helper_entity": "input_text.evcc_result",
         }
@@ -157,3 +161,38 @@ def test_run_api_cycle_with_error_handling_writes_error_result() -> None:
 
     payload = json.loads(client.writes[0][1])
     assert payload["status"] == "boom"
+
+
+def test_run_api_cycle_with_invalid_nighttime_helper_writes_error_result() -> None:
+    class InvalidNighttimeClient(DummyClient):
+        def get_entity_value(self, entity_id: str) -> str:
+            if entity_id == "input_boolean.nighttime_charging_only":
+                return "unknown"
+            return super().get_entity_value(entity_id)
+
+    client = InvalidNighttimeClient()
+    config = AppConfig.from_mapping(
+        {
+            "ev_current_soc_entity": "sensor.ev_current_soc",
+            "target_soc_entity": "input_number.ev_target_soc",
+            "ev_battery_capacity_entity": "sensor.ev_battery_capacity",
+            "charger_speed_entity": "sensor.ev_charger_power",
+            "charge_loss_entity": "input_number.ev_charge_loss",
+            "finish_by_entity": "input_datetime.ev_finish_by",
+            "nighttime_charging_only_entity": "input_boolean.nighttime_charging_only",
+            "pricing_information_entity": "sensor.electricity_prices",
+            "result_helper_entity": "input_text.evcc_result",
+        }
+    )
+
+    run_api_cycle_with_error_handling(
+        client=client,
+        config=config,
+        logger=logging.getLogger("test"),
+        now=datetime.fromisoformat("2026-03-14T00:01:00+01:00"),
+    )
+
+    payload = json.loads(client.writes[0][1])
+    assert payload["status"] == (
+        "Invalid input_boolean state for 'nighttime_charging_only_entity': unknown"
+    )

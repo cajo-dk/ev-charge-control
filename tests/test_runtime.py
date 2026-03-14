@@ -3,13 +3,26 @@ from datetime import datetime
 import pytest
 
 from evcc.ha_api import HomeAssistantApiError
-from evcc.runtime import LiveInputs, PricingPayload, calculate_result, next_quarter_boundary
+from evcc.runtime import (
+    LiveInputs,
+    PricingPayload,
+    calculate_result,
+    next_midnight_boundary,
+    next_quarter_boundary,
+)
 
 
 def test_next_quarter_boundary_moves_to_next_slot() -> None:
     current_time = datetime.fromisoformat("2026-03-14T00:16:00+01:00")
     assert next_quarter_boundary(current_time) == datetime.fromisoformat(
         "2026-03-14T00:30:00+01:00"
+    )
+
+
+def test_next_midnight_boundary_moves_to_next_day_midnight() -> None:
+    current_time = datetime.fromisoformat("2026-03-14T22:16:00+01:00")
+    assert next_midnight_boundary(current_time) == datetime.fromisoformat(
+        "2026-03-15T00:00:00+01:00"
     )
 
 
@@ -21,6 +34,7 @@ def test_calculate_result_selects_cheapest_valid_window() -> None:
         charger_speed="11",
         charge_loss="0",
         finish_by="06:30",
+        nighttime_charging_only=False,
         pricing_information=PricingPayload(
             raw_today=[
                 {"hour": "2026-03-14T00:15:00+01:00", "price": 3.0},
@@ -55,6 +69,7 @@ def test_calculate_result_returns_blank_window_when_charge_not_needed() -> None:
         charger_speed="11",
         charge_loss="0",
         finish_by="06:30",
+        nighttime_charging_only=False,
         pricing_information=PricingPayload(
             raw_today=[{"hour": "2026-03-14T00:15:00+01:00", "price": 3.0}],
             raw_tomorrow=None,
@@ -80,6 +95,7 @@ def test_calculate_result_uses_next_day_when_finish_by_has_passed() -> None:
         charger_speed="11",
         charge_loss="0",
         finish_by="00:30",
+        nighttime_charging_only=False,
         pricing_information=PricingPayload(
             raw_today=[
                 {"hour": "2026-03-14T23:45:00+01:00", "price": 2.0},
@@ -110,6 +126,7 @@ def test_calculate_result_raises_when_no_valid_window_exists() -> None:
         charger_speed="3.7",
         charge_loss="0",
         finish_by="01:00",
+        nighttime_charging_only=False,
         pricing_information=PricingPayload(
             raw_today=[
                 {"hour": "2026-03-14T00:15:00+01:00", "price": 1.0},
@@ -124,4 +141,71 @@ def test_calculate_result_raises_when_no_valid_window_exists() -> None:
         calculate_result(
             live_inputs,
             now=datetime.fromisoformat("2026-03-14T00:01:00+01:00"),
+        )
+
+
+def test_calculate_result_restricts_start_to_next_midnight_when_enabled() -> None:
+    live_inputs = LiveInputs(
+        ev_current_soc="20",
+        target_soc="40",
+        ev_battery_capacity="60",
+        charger_speed="11",
+        charge_loss="0",
+        finish_by="03:00",
+        nighttime_charging_only=True,
+        pricing_information=PricingPayload(
+            raw_today=[
+                {"hour": "2026-03-14T23:15:00+01:00", "price": 0.1},
+                {"hour": "2026-03-14T23:30:00+01:00", "price": 0.1},
+                {"hour": "2026-03-14T23:45:00+01:00", "price": 0.1},
+            ],
+            raw_tomorrow=[
+                {"hour": "2026-03-15T00:00:00+01:00", "price": 1.0},
+                {"hour": "2026-03-15T00:15:00+01:00", "price": 1.0},
+                {"hour": "2026-03-15T00:30:00+01:00", "price": 1.0},
+                {"hour": "2026-03-15T00:45:00+01:00", "price": 1.0},
+                {"hour": "2026-03-15T01:00:00+01:00", "price": 1.0},
+            ],
+            forecast=None,
+        ),
+    )
+
+    payload = calculate_result(
+        live_inputs,
+        now=datetime.fromisoformat("2026-03-14T22:10:00+01:00"),
+    )
+
+    assert payload["status"] == "ok"
+    assert payload["start"] == "00:00"
+    assert payload["end"] == "01:15"
+
+
+def test_calculate_result_raises_when_nighttime_only_window_is_not_available() -> None:
+    live_inputs = LiveInputs(
+        ev_current_soc="20",
+        target_soc="40",
+        ev_battery_capacity="60",
+        charger_speed="11",
+        charge_loss="0",
+        finish_by="00:30",
+        nighttime_charging_only=True,
+        pricing_information=PricingPayload(
+            raw_today=[
+                {"hour": "2026-03-14T23:15:00+01:00", "price": 0.1},
+                {"hour": "2026-03-14T23:30:00+01:00", "price": 0.1},
+                {"hour": "2026-03-14T23:45:00+01:00", "price": 0.1},
+            ],
+            raw_tomorrow=[
+                {"hour": "2026-03-15T00:00:00+01:00", "price": 1.0},
+                {"hour": "2026-03-15T00:15:00+01:00", "price": 1.0},
+                {"hour": "2026-03-15T00:30:00+01:00", "price": 1.0},
+            ],
+            forecast=None,
+        ),
+    )
+
+    with pytest.raises(HomeAssistantApiError, match="No valid charging window"):
+        calculate_result(
+            live_inputs,
+            now=datetime.fromisoformat("2026-03-14T22:10:00+01:00"),
         )

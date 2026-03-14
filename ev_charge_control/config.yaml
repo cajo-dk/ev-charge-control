@@ -1,5 +1,5 @@
 name: "EV Charge Control"
-version: "1.0.7"
+version: "1.1.0"
 slug: "ev_charge_control"
 description: "Calculate EV charging windows from pricing, SoC targets, and finish-by constraints."
 url: "https://github.com/cajo-dk/ev-charge-control"
@@ -21,6 +21,7 @@ options:
   charger_speed_entity: ""
   charge_loss_entity: ""
   finish_by_entity: ""
+  nighttime_charging_only_entity: ""
   pricing_information_entity: ""
   result_helper_entity: ""
 schema:
@@ -31,5 +32,6 @@ schema:
   charger_speed_entity: "str?"
   charge_loss_entity: "str?"
   finish_by_entity: "str?"
+  nighttime_charging_only_entity: "str?"
   pricing_information_entity: "str?"
   result_helper_entity: "str?"

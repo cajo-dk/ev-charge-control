@@ -20,6 +20,9 @@ configuration:
   finish_by_entity:
     name: Finish-by entity
     description: Entity ID for the sensor or helper that stores the required charging completion time.
+  nighttime_charging_only_entity:
+    name: Nighttime Charging Only
+    description: Entity ID for the input_boolean helper that restricts charging to the next midnight-to-finish-by window when turned on.
   pricing_information_entity:
     name: Pricing information entity
     description: Entity ID for the pricing sensor that provides raw_today, raw_tomorrow, and forecast attributes.

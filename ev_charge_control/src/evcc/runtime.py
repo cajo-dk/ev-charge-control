@@ -26,6 +26,7 @@ class LiveInputs:
     charger_speed: str | float | int | None
     charge_loss: str | float | int | None
     finish_by: str | float | int | None
+    nighttime_charging_only: bool
     pricing_information: PricingPayload
 
 
@@ -48,6 +49,10 @@ def load_live_inputs(client: HomeAssistantClient, config: Any) -> LiveInputs:
         charger_speed=client.get_entity_value(config.charger_speed_entity),
         charge_loss=client.get_entity_value(config.charge_loss_entity),
         finish_by=client.get_entity_value(config.finish_by_entity),
+        nighttime_charging_only=_parse_input_boolean_state(
+            client.get_entity_value(config.nighttime_charging_only_entity),
+            "nighttime_charging_only_entity",
+        ),
         pricing_information=PricingPayload(
             raw_today=_coerce_price_list(attributes.get("raw_today"), "raw_today"),
             raw_tomorrow=_coerce_optional_price_list(
@@ -105,7 +110,11 @@ def calculate_result(
     if slots_needed <= 0:
         return build_placeholder_result(current_time)
 
-    earliest_start = next_quarter_boundary(current_time)
+    earliest_start = (
+        next_midnight_boundary(current_time)
+        if live_inputs.nighttime_charging_only
+        else next_quarter_boundary(current_time)
+    )
     pricing = _normalize_pricing(live_inputs.pricing_information, current_time)
     start_time, end_time = _find_cheapest_window(
         pricing=pricing,
@@ -128,6 +137,15 @@ def next_quarter_boundary(current_time: datetime) -> datetime:
     if next_quarter >= 60:
         return (aligned.replace(minute=0) + timedelta(hours=1)).replace(second=0)
     return aligned.replace(minute=next_quarter)
+
+
+def next_midnight_boundary(current_time: datetime) -> datetime:
+    return (current_time + timedelta(days=1)).replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
 
 
 def _coerce_price_list(value: Any, field_name: str) -> list[dict[str, Any]]:
@@ -177,6 +195,21 @@ def _parse_percentage(value: str | float | int | None, field_name: str) -> float
     if parsed < 0 or parsed > 100:
         raise HomeAssistantApiError(f"'{field_name}' must be between 0 and 100.")
     return parsed
+
+
+def _parse_input_boolean_state(value: str | float | int | None, field_name: str) -> bool:
+    if value is None:
+        raise HomeAssistantApiError(f"Missing value for '{field_name}'.")
+
+    normalized = str(value).strip().lower()
+    if normalized == "on":
+        return True
+    if normalized == "off":
+        return False
+
+    raise HomeAssistantApiError(
+        f"Invalid input_boolean state for '{field_name}': {value}"
+    )
 
 
 def _parse_finish_by(value: str | float | int | None, now: datetime) -> datetime:
