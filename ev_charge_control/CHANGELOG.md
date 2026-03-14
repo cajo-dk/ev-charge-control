@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.7
+- Repaired the release history so the changelog now matches the version shown in Home Assistant.
+- Ensured the changelog is aligned with the new tagged release version.
+
+## 1.0.6
+- Clarified that the changelog must be updated before the release commit is created.
+- Corrected the changelog workflow so Home Assistant version notes stay aligned with the tagged release.
+
 ## 1.0.5
 - Moved the changelog into `ev_charge_control/CHANGELOG.md`.
 - Updated the release rules so future version changes maintain the changelog in the add-on folder.
