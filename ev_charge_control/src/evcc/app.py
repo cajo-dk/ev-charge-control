@@ -71,6 +71,12 @@ class ExecutionState:
     result_payload: dict[str, Any] | None
 
 
+@dataclass(slots=True)
+class TickResult:
+    last_calculation_time: datetime | None
+    soc_at_charge_start: float | None
+
+
 def configure_logging(level: str) -> None:
     logging.basicConfig(
         level=getattr(logging, level, logging.INFO),
@@ -147,7 +153,10 @@ def perform_api_cycle(
     config: AppConfig,
     logger: logging.Logger,
     now: datetime | None = None,
+    soc_at_charge_start: float | None = None,
 ) -> None:
+    current_time = now or datetime.now().astimezone()
+    execution_state = load_execution_state(client, config, now=current_time)
     live_inputs = load_live_inputs(client, config)
     logger.info(
         "Loaded live inputs from Home Assistant: current_soc=%s target_soc=%s "
@@ -168,15 +177,24 @@ def perform_api_cycle(
         live_inputs.pricing_information.forecast,
     )
 
-    result_payload = calculate_result(live_inputs, now=now)
+    result_payload = calculate_result(live_inputs, now=current_time)
+    output_payload = build_output_payload(
+        result_payload,
+        finish_by=execution_state.finish_by,
+        schedule_authorized=execution_state.schedule_authorized,
+        charger_enabled=execution_state.charger_enabled,
+        current_soc=execution_state.current_soc,
+        target_soc=execution_state.target_soc,
+        soc_at_charge_start=soc_at_charge_start,
+    )
     client.set_input_text(
         config.result_helper_entity,
-        dump_result_payload(result_payload),
+        dump_result_payload(output_payload),
     )
     logger.info(
         "Wrote charging result to helper '%s': %s",
         config.result_helper_entity,
-        result_payload,
+        output_payload,
     )
 
 
@@ -186,15 +204,30 @@ def run_api_cycle_with_error_handling(
     config: AppConfig,
     logger: logging.Logger,
     now: datetime | None = None,
+    soc_at_charge_start: float | None = None,
 ) -> None:
     try:
-        perform_api_cycle(client=client, config=config, logger=logger, now=now)
+        perform_api_cycle(
+            client=client,
+            config=config,
+            logger=logger,
+            now=now,
+            soc_at_charge_start=soc_at_charge_start,
+        )
     except HomeAssistantApiError as exc:
         logger.error("Home Assistant API cycle failed: %s", exc)
         try:
+            error_payload = build_error_result(str(exc), now=now)
+            output_payload = enrich_payload_from_current_state(
+                client=client,
+                config=config,
+                payload=error_payload,
+                now=now or datetime.now().astimezone(),
+                soc_at_charge_start=soc_at_charge_start,
+            )
             client.set_input_text(
                 config.result_helper_entity,
-                dump_result_payload(build_error_result(str(exc), now=now)),
+                dump_result_payload(output_payload),
             )
             logger.info(
                 "Wrote API error status to helper '%s'.",
@@ -285,6 +318,58 @@ def should_unlock_schedule(state: ExecutionState, *, now: datetime) -> bool:
     return state.current_soc >= state.target_soc or now >= state.finish_by
 
 
+def build_output_payload(
+    payload: dict[str, Any],
+    *,
+    finish_by: datetime | None,
+    schedule_authorized: bool,
+    charger_enabled: bool,
+    current_soc: float | None,
+    target_soc: float | None,
+    soc_at_charge_start: float | None,
+) -> dict[str, Any]:
+    output_payload = dict(payload)
+    output_payload["complete_by"] = finish_by.strftime("%H:%M") if finish_by else ""
+    output_payload["authorization_enabled"] = schedule_authorized
+    output_payload["charger_enabled"] = charger_enabled
+    output_payload["soc_at_charge_start"] = _format_soc_value(soc_at_charge_start)
+    output_payload["current_soc"] = _format_soc_value(current_soc)
+    output_payload["target_soc"] = _format_soc_value(target_soc)
+    return output_payload
+
+
+def enrich_payload_from_current_state(
+    *,
+    client: HomeAssistantClient,
+    config: AppConfig,
+    payload: dict[str, Any],
+    now: datetime,
+    soc_at_charge_start: float | None,
+) -> dict[str, Any]:
+    try:
+        state = load_execution_state(client, config, now=now)
+    except HomeAssistantApiError:
+        return build_output_payload(
+            payload,
+            finish_by=None,
+            schedule_authorized=False,
+            charger_enabled=False,
+            current_soc=None,
+            target_soc=None,
+            soc_at_charge_start=soc_at_charge_start,
+        )
+
+    return build_output_payload(
+        payload,
+        finish_by=state.finish_by,
+        schedule_authorized=state.schedule_authorized,
+        charger_enabled=state.charger_enabled,
+        current_soc=state.current_soc,
+        target_soc=state.target_soc,
+        soc_at_charge_start=soc_at_charge_start,
+    )
+
+
 def is_schedule_due(result_payload: dict[str, Any] | None, *, now: datetime) -> bool:
     if not result_payload:
         return False
@@ -352,35 +437,93 @@ def process_minute_tick(
     logger: logging.Logger,
     now: datetime,
     last_calculation_time: datetime | None,
-) -> datetime | None:
+    soc_at_charge_start: float | None,
+) -> TickResult:
     state = load_execution_state(client, config, now=now)
+    soc_at_charge_start = _resolve_soc_at_charge_start(
+        existing_value=soc_at_charge_start,
+        state=state,
+    )
 
     if state.charger_enabled and not should_unlock_schedule(state, now=now):
+        write_runtime_output(
+            client=client,
+            config=config,
+            state=state,
+            now=now,
+            soc_at_charge_start=soc_at_charge_start,
+        )
         logger.info(
             "Charger switch '%s' is on; schedule updates remain locked.",
             config.charger_control_switch_entity,
         )
-        return last_calculation_time
+        return TickResult(
+            last_calculation_time=last_calculation_time,
+            soc_at_charge_start=soc_at_charge_start,
+        )
 
     if should_run_calculation(now, last_calculation_time):
-        run_api_cycle_with_error_handling(client=client, config=config, logger=logger, now=now)
+        run_api_cycle_with_error_handling(
+            client=client,
+            config=config,
+            logger=logger,
+            now=now,
+            soc_at_charge_start=soc_at_charge_start,
+        )
         last_calculation_time = now
         state = load_execution_state(client, config, now=now)
+        soc_at_charge_start = _resolve_soc_at_charge_start(
+            existing_value=soc_at_charge_start,
+            state=state,
+        )
 
     if state.charger_enabled:
+        write_runtime_output(
+            client=client,
+            config=config,
+            state=state,
+            now=now,
+            soc_at_charge_start=soc_at_charge_start,
+        )
         logger.debug(
             "Charger switch '%s' is on but schedule lock has been released.",
             config.charger_control_switch_entity,
         )
-        return last_calculation_time
+        return TickResult(
+            last_calculation_time=last_calculation_time,
+            soc_at_charge_start=soc_at_charge_start,
+        )
 
     if not state.schedule_authorized:
-        return last_calculation_time
+        write_runtime_output(
+            client=client,
+            config=config,
+            state=state,
+            now=now,
+            soc_at_charge_start=soc_at_charge_start,
+        )
+        return TickResult(
+            last_calculation_time=last_calculation_time,
+            soc_at_charge_start=soc_at_charge_start,
+        )
 
     if is_schedule_due(state.result_payload, now=now):
+        soc_at_charge_start = state.current_soc
         execute_due_schedule(client=client, config=config, logger=logger)
+        state = load_execution_state(client, config, now=now)
 
-    return last_calculation_time
+    write_runtime_output(
+        client=client,
+        config=config,
+        state=state,
+        now=now,
+        soc_at_charge_start=soc_at_charge_start,
+    )
+
+    return TickResult(
+        last_calculation_time=last_calculation_time,
+        soc_at_charge_start=soc_at_charge_start,
+    )
 
 
 def run_scheduler(
@@ -406,14 +549,28 @@ def run_scheduler(
         now=startup_time,
     )
     last_calculation_time: datetime | None = startup_time
+    soc_at_charge_start: float | None = None
     try:
         state = load_execution_state(client, config, now=startup_time)
+        soc_at_charge_start = _resolve_soc_at_charge_start(
+            existing_value=None,
+            state=state,
+        )
         if (
             not state.charger_enabled
             and state.schedule_authorized
             and is_schedule_due(state.result_payload, now=startup_time)
         ):
+            soc_at_charge_start = state.current_soc
             execute_due_schedule(client=client, config=config, logger=logger)
+            state = load_execution_state(client, config, now=startup_time)
+        write_runtime_output(
+            client=client,
+            config=config,
+            state=state,
+            now=startup_time,
+            soc_at_charge_start=soc_at_charge_start,
+        )
     except HomeAssistantApiError as exc:
         logger.error("Execution check failed at startup: %s", exc)
 
@@ -434,13 +591,16 @@ def run_scheduler(
 
         tick_time = datetime.now().astimezone().replace(second=0, microsecond=0)
         try:
-            last_calculation_time = process_minute_tick(
+            tick_result = process_minute_tick(
                 client=client,
                 config=config,
                 logger=logger,
                 now=tick_time,
                 last_calculation_time=last_calculation_time,
+                soc_at_charge_start=soc_at_charge_start,
             )
+            last_calculation_time = tick_result.last_calculation_time
+            soc_at_charge_start = tick_result.soc_at_charge_start
         except HomeAssistantApiError as exc:
             logger.error("Minute execution tick failed: %s", exc)
 
@@ -492,6 +652,56 @@ def _parse_switch_state(value: str | float | int | None, field_name: str) -> boo
         return False
 
     raise HomeAssistantApiError(f"Invalid switch state for '{field_name}': {value}")
+
+
+def _resolve_soc_at_charge_start(
+    *,
+    existing_value: float | None,
+    state: ExecutionState,
+) -> float | None:
+    if existing_value is not None:
+        return existing_value
+
+    payload_value = None
+    if state.result_payload is not None:
+        payload_value = state.result_payload.get("soc_at_charge_start")
+
+    if payload_value in {"", None}:
+        return state.current_soc if state.charger_enabled else None
+
+    try:
+        return float(payload_value)
+    except (TypeError, ValueError):
+        return state.current_soc if state.charger_enabled else None
+
+
+def _format_soc_value(value: float | None) -> float | int | str:
+    if value is None:
+        return ""
+    if float(value).is_integer():
+        return int(value)
+    return round(value, 3)
+
+
+def write_runtime_output(
+    *,
+    client: HomeAssistantClient,
+    config: AppConfig,
+    state: ExecutionState,
+    now: datetime,
+    soc_at_charge_start: float | None,
+) -> None:
+    base_payload = state.result_payload or build_error_result("No result payload available.", now=now)
+    output_payload = build_output_payload(
+        base_payload,
+        finish_by=state.finish_by,
+        schedule_authorized=state.schedule_authorized,
+        charger_enabled=state.charger_enabled,
+        current_soc=state.current_soc,
+        target_soc=state.target_soc,
+        soc_at_charge_start=soc_at_charge_start,
+    )
+    client.set_input_text(config.result_helper_entity, dump_result_payload(output_payload))
 
 
 if __name__ == "__main__":

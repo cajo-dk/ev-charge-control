@@ -7,6 +7,8 @@ import pytest
 
 from evcc.app import (
     AppConfig,
+    TickResult,
+    build_output_payload,
     create_home_assistant_client,
     is_schedule_due,
     load_options,
@@ -151,6 +153,12 @@ def test_perform_api_cycle_writes_placeholder_result() -> None:
     assert payload["status"] == "ok"
     assert payload["start"] == "00:15"
     assert payload["end"] == "05:00"
+    assert payload["complete_by"] == "06:30"
+    assert payload["authorization_enabled"] is False
+    assert payload["charger_enabled"] is False
+    assert payload["soc_at_charge_start"] == ""
+    assert payload["current_soc"] == 20
+    assert payload["target_soc"] == 80
 
 
 def test_api_error_preserves_explicit_exception_type() -> None:
@@ -180,6 +188,7 @@ def test_run_api_cycle_with_error_handling_writes_error_result() -> None:
 
     payload = json.loads(client.writes[0][1])
     assert payload["status"] == "boom"
+    assert payload["complete_by"] == "06:30"
 
 
 def test_run_api_cycle_with_invalid_nighttime_helper_writes_error_result() -> None:
@@ -222,6 +231,25 @@ def test_is_schedule_due_ignores_blank_or_error_payloads() -> None:
     assert not is_schedule_due({"status": "ok", "start": ""}, now=now)
 
 
+def test_build_output_payload_adds_runtime_fields() -> None:
+    payload = build_output_payload(
+        {"start": "00:15", "end": "05:00", "timestamp": "2026-03-14T00:01:00+01:00", "status": "ok"},
+        finish_by=datetime.fromisoformat("2026-03-14T06:30:00+01:00"),
+        schedule_authorized=True,
+        charger_enabled=False,
+        current_soc=47.0,
+        target_soc=100.0,
+        soc_at_charge_start=None,
+    )
+
+    assert payload["complete_by"] == "06:30"
+    assert payload["authorization_enabled"] is True
+    assert payload["charger_enabled"] is False
+    assert payload["soc_at_charge_start"] == ""
+    assert payload["current_soc"] == 47
+    assert payload["target_soc"] == 100
+
+
 def test_process_minute_tick_turns_on_switch_and_disables_authorization() -> None:
     client = DummyClient()
     client.entity_values["input_boolean.schedule_authorized"] = "on"
@@ -240,13 +268,21 @@ def test_process_minute_tick_turns_on_switch_and_disables_authorization() -> Non
         logger=logging.getLogger("test"),
         now=datetime.fromisoformat("2026-03-14T00:15:00+01:00"),
         last_calculation_time=datetime.fromisoformat("2026-03-14T00:01:00+01:00"),
+        soc_at_charge_start=None,
     )
 
-    assert result == datetime.fromisoformat("2026-03-14T00:01:00+01:00")
+    assert result == TickResult(
+        last_calculation_time=datetime.fromisoformat("2026-03-14T00:01:00+01:00"),
+        soc_at_charge_start=20.0,
+    )
     assert client.actions == [
         ("turn_on_switch", "switch.ev_charger_control"),
         ("turn_off_input_boolean", "input_boolean.schedule_authorized"),
     ]
+    payload = json.loads(client.entity_values["input_text.evcc_result"])
+    assert payload["authorization_enabled"] is False
+    assert payload["charger_enabled"] is True
+    assert payload["soc_at_charge_start"] == 20
 
 
 def test_process_minute_tick_does_not_execute_when_authorization_is_off() -> None:
@@ -266,9 +302,13 @@ def test_process_minute_tick_does_not_execute_when_authorization_is_off() -> Non
         logger=logging.getLogger("test"),
         now=datetime.fromisoformat("2026-03-14T00:15:00+01:00"),
         last_calculation_time=datetime.fromisoformat("2026-03-14T00:01:00+01:00"),
+        soc_at_charge_start=None,
     )
 
     assert client.actions == []
+    payload = json.loads(client.entity_values["input_text.evcc_result"])
+    assert payload["authorization_enabled"] is False
+    assert payload["charger_enabled"] is False
 
 
 def test_process_minute_tick_raises_for_invalid_authorization_helper() -> None:
@@ -285,6 +325,7 @@ def test_process_minute_tick_raises_for_invalid_authorization_helper() -> None:
             logger=logging.getLogger("test"),
             now=datetime.fromisoformat("2026-03-14T00:15:00+01:00"),
             last_calculation_time=datetime.fromisoformat("2026-03-14T00:01:00+01:00"),
+            soc_at_charge_start=None,
         )
 
 
@@ -300,10 +341,17 @@ def test_process_minute_tick_skips_calculation_while_locked() -> None:
         logger=logging.getLogger("test"),
         now=datetime.fromisoformat("2026-03-14T00:16:00+01:00"),
         last_calculation_time=datetime.fromisoformat("2026-03-14T00:01:00+01:00"),
+        soc_at_charge_start=19.0,
     )
 
-    assert result == datetime.fromisoformat("2026-03-14T00:01:00+01:00")
-    assert client.writes == []
+    assert result == TickResult(
+        last_calculation_time=datetime.fromisoformat("2026-03-14T00:01:00+01:00"),
+        soc_at_charge_start=19.0,
+    )
+    assert client.writes
+    payload = json.loads(client.entity_values["input_text.evcc_result"])
+    assert payload["soc_at_charge_start"] == 19
+    assert payload["charger_enabled"] is True
 
 
 def test_process_minute_tick_recalculates_when_lock_releases_at_target_soc() -> None:
@@ -318,7 +366,14 @@ def test_process_minute_tick_recalculates_when_lock_releases_at_target_soc() -> 
         logger=logging.getLogger("test"),
         now=datetime.fromisoformat("2026-03-14T00:16:00+01:00"),
         last_calculation_time=datetime.fromisoformat("2026-03-14T00:01:00+01:00"),
+        soc_at_charge_start=20.0,
     )
 
-    assert result == datetime.fromisoformat("2026-03-14T00:16:00+01:00")
+    assert result == TickResult(
+        last_calculation_time=datetime.fromisoformat("2026-03-14T00:16:00+01:00"),
+        soc_at_charge_start=20.0,
+    )
     assert client.writes
+    payload = json.loads(client.entity_values["input_text.evcc_result"])
+    assert payload["current_soc"] == 80
+    assert payload["target_soc"] == 80

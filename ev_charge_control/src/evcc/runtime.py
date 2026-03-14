@@ -79,7 +79,7 @@ def build_error_result(message: str, now: datetime | None = None) -> dict[str, s
     return payload
 
 
-def dump_result_payload(payload: dict[str, str]) -> str:
+def dump_result_payload(payload: dict[str, Any]) -> str:
     return json.dumps(payload)
 
 

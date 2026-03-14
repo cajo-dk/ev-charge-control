@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.0
+- Expanded the EVCC result payload with finish-by, authorization, charger-state, and SoC status fields.
+- Captured the EV SoC at charge start and kept the output aligned with live charging state during execution.
+- Standardized payload writes across calculation, execution, and error paths.
+
 ## 1.2.1
 - Fixed nighttime charging failures when tomorrow pricing was sourced from hourly forecast data.
 - Expanded forecast pricing into 15-minute slots before the charging window search.
