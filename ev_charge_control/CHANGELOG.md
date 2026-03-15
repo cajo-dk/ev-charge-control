@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.7.2
+- Captured `soc_at_charge_start` when the charging cable transitions from unplugged to plugged.
+- Preserved the captured start SoC while charging remains on instead of overwriting it on later ticks.
+
 ## 1.7.1
 - Replaced blank calculated start and end placeholders with `--:--` when no schedule is available.
 - Aligned helper synchronization and runtime schedule checks with the new no-schedule placeholder.
