@@ -591,6 +591,8 @@ def process_minute_tick(
         published_payload=published_payload,
         state=state,
     )
+    if _did_cable_transition_to_plugged(published_payload=published_payload, state=state):
+        soc_at_charge_start = state.current_soc
 
     previous_status = str((published_payload or {}).get("status", "OK"))
     previous_lock = bool((published_payload or {}).get("lock_calculation", False))
@@ -897,6 +899,15 @@ def _resolve_soc_at_charge_start(
         return float(payload_value)
     except (TypeError, ValueError):
         return state.current_soc if state.charger_enabled else None
+
+
+def _did_cable_transition_to_plugged(
+    *,
+    published_payload: dict[str, Any] | None,
+    state: ExecutionState,
+) -> bool:
+    previous_cable_state = str((published_payload or {}).get("cable_state", "")).strip()
+    return previous_cable_state == CABLE_UNPLUGGED and state.cable == CABLE_PLUGGED
 
 
 def _format_soc_value(value: float | None) -> float | int | str:

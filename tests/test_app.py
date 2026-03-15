@@ -534,6 +534,62 @@ def test_process_minute_tick_updates_charge_start_soc_helper_when_charging_start
     assert ("set_input_number", "input_number.ev_charge_start_soc", 20) in client.actions
 
 
+def test_process_minute_tick_sets_soc_at_charge_start_when_cable_plugs_in() -> None:
+    client = DummyClient()
+    publisher = DummyPublisher()
+    client.entity_values["binary_sensor.ev_cable_connected"] = "on"
+    client.entity_values["sensor.ev_current_soc"] = "33"
+
+    result = process_minute_tick(
+        client=client,
+        publisher=publisher,
+        config=build_config(),
+        logger=logging.getLogger("test"),
+        now=datetime.fromisoformat("2026-03-14T00:17:00+01:00"),
+        last_calculation_time=datetime.fromisoformat("2026-03-14T00:16:00+01:00"),
+        soc_at_charge_start=20.0,
+        published_payload={
+            "status": "OK",
+            "start": "00:15",
+            "end": "05:00",
+            "timestamp": "2026-03-14T00:01:00+01:00",
+            "cable_state": "Unplugged",
+            "charger_enabled": False,
+        },
+    )
+
+    assert result.soc_at_charge_start == 33.0
+    assert publisher.outputs[-1]["soc_at_charge_start"] == 33
+
+
+def test_process_minute_tick_keeps_soc_at_charge_start_constant_while_charging_is_on() -> None:
+    client = DummyClient()
+    publisher = DummyPublisher()
+    client.entity_values["switch.ev_charger_control"] = "on"
+    client.entity_values["sensor.ev_current_soc"] = "25"
+
+    result = process_minute_tick(
+        client=client,
+        publisher=publisher,
+        config=build_config(),
+        logger=logging.getLogger("test"),
+        now=datetime.fromisoformat("2026-03-14T00:17:00+01:00"),
+        last_calculation_time=datetime.fromisoformat("2026-03-14T00:16:00+01:00"),
+        soc_at_charge_start=20.0,
+        published_payload={
+            "status": "OK",
+            "start": "00:15",
+            "end": "05:00",
+            "timestamp": "2026-03-14T00:01:00+01:00",
+            "cable_state": "Plugged",
+            "charger_enabled": True,
+        },
+    )
+
+    assert result.soc_at_charge_start == 20.0
+    assert publisher.outputs[-1]["soc_at_charge_start"] == 20
+
+
 def test_sync_schedule_helpers_write_start_and_end_values() -> None:
     client = DummyClient()
 
