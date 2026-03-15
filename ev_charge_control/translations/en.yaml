@@ -35,6 +35,12 @@ configuration:
   soc_at_charge_start_helper_entity:
     name: Charge-start SoC helper
     description: Optional input_number helper that EV Charge Control updates with the EV SoC captured when charging starts. EVCC writes 0 when no charge-start SoC is currently available.
+  calculated_start_helper_entity:
+    name: Calculated start helper
+    description: Optional input_text helper that EV Charge Control updates with the latest calculated charging start time. EVCC writes an empty string when no start time is available.
+  calculated_end_helper_entity:
+    name: Calculated end helper
+    description: Optional input_text helper that EV Charge Control updates with the latest calculated charging end time. EVCC writes an empty string when no end time is available.
   pricing_information_entity:
     name: Pricing information entity
     description: Entity ID for the pricing sensor that provides raw_today, raw_tomorrow, and forecast attributes.

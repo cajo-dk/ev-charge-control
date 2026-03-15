@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.0
+- Added optional `input_text` helper outputs for the calculated charging start and end times.
+- Synchronized the helpers from the finalized runtime payload without rewriting unchanged values.
+- Wrote empty strings to the helpers when no calculated schedule values are available.
+
 ## 1.6.0
 - Added an optional `input_number` helper output for the SoC captured when charging starts.
 - Synchronized the helper through the Home Assistant API without rewriting unchanged values.

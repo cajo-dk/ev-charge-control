@@ -56,6 +56,8 @@ class AppConfig:
     charger_control_switch_entity: str = ""
     schedule_authorized_entity: str = ""
     soc_at_charge_start_helper_entity: str = ""
+    calculated_start_helper_entity: str = ""
+    calculated_end_helper_entity: str = ""
     pricing_information_entity: str = ""
     mqtt_host: str = ""
     mqtt_port: int = DEFAULT_MQTT_PORT
@@ -712,6 +714,11 @@ def process_minute_tick(
         config=config,
         soc_at_charge_start=soc_at_charge_start,
     )
+    sync_schedule_helpers(
+        client=client,
+        config=config,
+        payload=published_payload,
+    )
     return TickResult(last_calculation_time, soc_at_charge_start, published_payload)
 
 
@@ -769,6 +776,11 @@ def run_scheduler(
             client=client,
             config=config,
             soc_at_charge_start=soc_at_charge_start,
+        )
+        sync_schedule_helpers(
+            client=client,
+            config=config,
+            payload=published_payload,
         )
     except HomeAssistantApiError as exc:
         logger.error("Execution check failed at startup: %s", exc)
@@ -913,6 +925,45 @@ def sync_soc_at_charge_start_helper(
         return
 
     client.set_input_number(entity_id, _format_soc_value(desired_value))
+
+
+def sync_schedule_helpers(
+    *,
+    client: HomeAssistantClient,
+    config: AppConfig,
+    payload: dict[str, Any],
+) -> None:
+    _sync_input_text_helper(
+        client=client,
+        entity_id=config.calculated_start_helper_entity,
+        value=str(payload.get("start", "")),
+        field_name="calculated_start_helper_entity",
+    )
+    _sync_input_text_helper(
+        client=client,
+        entity_id=config.calculated_end_helper_entity,
+        value=str(payload.get("end", "")),
+        field_name="calculated_end_helper_entity",
+    )
+
+
+def _sync_input_text_helper(
+    *,
+    client: HomeAssistantClient,
+    entity_id: str,
+    value: str,
+    field_name: str,
+) -> None:
+    normalized_entity_id = entity_id.strip()
+    if not normalized_entity_id:
+        return
+
+    current_value = client.get_entity_value(normalized_entity_id)
+    normalized_current = "" if current_value is None else str(current_value)
+    if normalized_current == value:
+        return
+
+    client.set_input_text(normalized_entity_id, value)
 
 
 def _should_suppress_state_machine_actions(

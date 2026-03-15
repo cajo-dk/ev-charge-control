@@ -17,6 +17,7 @@ from evcc.app import (
     resolve_schedule_start,
     run_api_cycle_with_error_handling,
     sync_soc_at_charge_start_helper,
+    sync_schedule_helpers,
     validate_config,
 )
 from evcc.ha_api import HomeAssistantApiError
@@ -37,6 +38,8 @@ class DummyClient:
             "switch.ev_charger_control": "off",
             "input_boolean.schedule_authorized": "off",
             "input_number.ev_charge_start_soc": "0",
+            "input_text.ev_charge_start": "",
+            "input_text.ev_charge_end": "",
         }
 
     def get_entity_value(self, entity_id: str) -> str:
@@ -94,6 +97,10 @@ class DummyClient:
         self.actions.append(("set_input_number", entity_id, value))
         self.entity_values[entity_id] = str(value)
 
+    def set_input_text(self, entity_id: str, value: str) -> None:
+        self.actions.append(("set_input_text", entity_id, value))
+        self.entity_values[entity_id] = value
+
 
 class DummyPublisher:
     def __init__(self) -> None:
@@ -116,6 +123,8 @@ def build_config(**overrides: str | int) -> AppConfig:
         "charger_control_switch_entity": "switch.ev_charger_control",
         "schedule_authorized_entity": "input_boolean.schedule_authorized",
         "soc_at_charge_start_helper_entity": "",
+        "calculated_start_helper_entity": "",
+        "calculated_end_helper_entity": "",
         "pricing_information_entity": "sensor.electricity_prices",
         "mqtt_host": "mqtt.local",
         "mqtt_port": 1883,
@@ -521,3 +530,76 @@ def test_process_minute_tick_updates_charge_start_soc_helper_when_charging_start
     )
 
     assert ("set_input_number", "input_number.ev_charge_start_soc", 20) in client.actions
+
+
+def test_sync_schedule_helpers_write_start_and_end_values() -> None:
+    client = DummyClient()
+
+    sync_schedule_helpers(
+        client=client,
+        config=build_config(
+            calculated_start_helper_entity="input_text.ev_charge_start",
+            calculated_end_helper_entity="input_text.ev_charge_end",
+        ),
+        payload={"start": "00:15", "end": "05:00"},
+    )
+
+    assert ("set_input_text", "input_text.ev_charge_start", "00:15") in client.actions
+    assert ("set_input_text", "input_text.ev_charge_end", "05:00") in client.actions
+
+
+def test_sync_schedule_helpers_skip_unchanged_values() -> None:
+    client = DummyClient()
+    client.entity_values["input_text.ev_charge_start"] = "00:15"
+    client.entity_values["input_text.ev_charge_end"] = "05:00"
+
+    sync_schedule_helpers(
+        client=client,
+        config=build_config(
+            calculated_start_helper_entity="input_text.ev_charge_start",
+            calculated_end_helper_entity="input_text.ev_charge_end",
+        ),
+        payload={"start": "00:15", "end": "05:00"},
+    )
+
+    assert client.actions == []
+
+
+def test_sync_schedule_helpers_write_empty_strings_when_values_missing() -> None:
+    client = DummyClient()
+    client.entity_values["input_text.ev_charge_start"] = "00:15"
+    client.entity_values["input_text.ev_charge_end"] = "05:00"
+
+    sync_schedule_helpers(
+        client=client,
+        config=build_config(
+            calculated_start_helper_entity="input_text.ev_charge_start",
+            calculated_end_helper_entity="input_text.ev_charge_end",
+        ),
+        payload={"start": "", "end": ""},
+    )
+
+    assert ("set_input_text", "input_text.ev_charge_start", "") in client.actions
+    assert ("set_input_text", "input_text.ev_charge_end", "") in client.actions
+
+
+def test_process_minute_tick_updates_schedule_helpers_from_runtime_payload() -> None:
+    client = DummyClient()
+    publisher = DummyPublisher()
+
+    process_minute_tick(
+        client=client,
+        publisher=publisher,
+        config=build_config(
+            calculated_start_helper_entity="input_text.ev_charge_start",
+            calculated_end_helper_entity="input_text.ev_charge_end",
+        ),
+        logger=logging.getLogger("test"),
+        now=datetime.fromisoformat("2026-03-14T00:01:00+01:00"),
+        last_calculation_time=None,
+        soc_at_charge_start=None,
+        published_payload=None,
+    )
+
+    assert ("set_input_text", "input_text.ev_charge_start", "00:15") in client.actions
+    assert ("set_input_text", "input_text.ev_charge_end", "05:00") in client.actions
