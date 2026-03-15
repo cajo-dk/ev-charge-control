@@ -16,6 +16,7 @@ from evcc.app import (
     process_minute_tick,
     resolve_schedule_start,
     run_api_cycle_with_error_handling,
+    sync_soc_at_charge_start_helper,
     validate_config,
 )
 from evcc.ha_api import HomeAssistantApiError
@@ -35,6 +36,7 @@ class DummyClient:
             "binary_sensor.ev_cable_connected": "on",
             "switch.ev_charger_control": "off",
             "input_boolean.schedule_authorized": "off",
+            "input_number.ev_charge_start_soc": "0",
         }
 
     def get_entity_value(self, entity_id: str) -> str:
@@ -88,6 +90,10 @@ class DummyClient:
         self.actions.append(("turn_off_input_boolean", entity_id))
         self.entity_values[entity_id] = "off"
 
+    def set_input_number(self, entity_id: str, value: float | int) -> None:
+        self.actions.append(("set_input_number", entity_id, value))
+        self.entity_values[entity_id] = str(value)
+
 
 class DummyPublisher:
     def __init__(self) -> None:
@@ -97,24 +103,25 @@ class DummyPublisher:
         self.outputs.append(payload)
 
 
-def build_config() -> AppConfig:
-    return AppConfig.from_mapping(
-        {
-            "ev_current_soc_entity": "sensor.ev_current_soc",
-            "target_soc_entity": "input_number.ev_target_soc",
-            "ev_battery_capacity_entity": "sensor.ev_battery_capacity",
-            "charger_speed_entity": "sensor.ev_charger_power",
-            "charge_loss_entity": "input_number.ev_charge_loss",
-            "finish_by_entity": "input_datetime.ev_finish_by",
-            "nighttime_charging_only_entity": "input_boolean.nighttime_charging_only",
-            "cable_connected_entity": "binary_sensor.ev_cable_connected",
-            "charger_control_switch_entity": "switch.ev_charger_control",
-            "schedule_authorized_entity": "input_boolean.schedule_authorized",
-            "pricing_information_entity": "sensor.electricity_prices",
-            "mqtt_host": "mqtt.local",
-            "mqtt_port": 1883,
-        }
-    )
+def build_config(**overrides: str | int) -> AppConfig:
+    mapping: dict[str, str | int] = {
+        "ev_current_soc_entity": "sensor.ev_current_soc",
+        "target_soc_entity": "input_number.ev_target_soc",
+        "ev_battery_capacity_entity": "sensor.ev_battery_capacity",
+        "charger_speed_entity": "sensor.ev_charger_power",
+        "charge_loss_entity": "input_number.ev_charge_loss",
+        "finish_by_entity": "input_datetime.ev_finish_by",
+        "nighttime_charging_only_entity": "input_boolean.nighttime_charging_only",
+        "cable_connected_entity": "binary_sensor.ev_cable_connected",
+        "charger_control_switch_entity": "switch.ev_charger_control",
+        "schedule_authorized_entity": "input_boolean.schedule_authorized",
+        "soc_at_charge_start_helper_entity": "",
+        "pricing_information_entity": "sensor.electricity_prices",
+        "mqtt_host": "mqtt.local",
+        "mqtt_port": 1883,
+    }
+    mapping.update(overrides)
+    return AppConfig.from_mapping(mapping)
 
 
 def test_app_config_normalizes_log_level() -> None:
@@ -444,3 +451,73 @@ def test_process_minute_tick_only_resets_once_when_target_soc_is_already_reached
 
     assert client.actions.count(("turn_off_switch", "switch.ev_charger_control")) == 1
     assert second_result.published_payload["state_machine_rule"] == "auto_reset_soc_reached"
+
+
+def test_sync_soc_at_charge_start_helper_writes_captured_soc() -> None:
+    client = DummyClient()
+
+    sync_soc_at_charge_start_helper(
+        client=client,
+        config=build_config(
+            soc_at_charge_start_helper_entity="input_number.ev_charge_start_soc"
+        ),
+        soc_at_charge_start=20.0,
+    )
+
+    assert client.actions == [("set_input_number", "input_number.ev_charge_start_soc", 20)]
+
+
+def test_sync_soc_at_charge_start_helper_skips_unchanged_value() -> None:
+    client = DummyClient()
+    client.entity_values["input_number.ev_charge_start_soc"] = "20"
+
+    sync_soc_at_charge_start_helper(
+        client=client,
+        config=build_config(
+            soc_at_charge_start_helper_entity="input_number.ev_charge_start_soc"
+        ),
+        soc_at_charge_start=20.0,
+    )
+
+    assert client.actions == []
+
+
+def test_sync_soc_at_charge_start_helper_resets_to_zero_when_unknown() -> None:
+    client = DummyClient()
+    client.entity_values["input_number.ev_charge_start_soc"] = "20"
+
+    sync_soc_at_charge_start_helper(
+        client=client,
+        config=build_config(
+            soc_at_charge_start_helper_entity="input_number.ev_charge_start_soc"
+        ),
+        soc_at_charge_start=None,
+    )
+
+    assert client.actions == [("set_input_number", "input_number.ev_charge_start_soc", 0)]
+
+
+def test_process_minute_tick_updates_charge_start_soc_helper_when_charging_starts() -> None:
+    client = DummyClient()
+    publisher = DummyPublisher()
+    client.entity_values["input_boolean.schedule_authorized"] = "on"
+
+    process_minute_tick(
+        client=client,
+        publisher=publisher,
+        config=build_config(
+            soc_at_charge_start_helper_entity="input_number.ev_charge_start_soc"
+        ),
+        logger=logging.getLogger("test"),
+        now=datetime.fromisoformat("2026-03-14T00:15:00+01:00"),
+        last_calculation_time=datetime.fromisoformat("2026-03-14T00:01:00+01:00"),
+        soc_at_charge_start=None,
+        published_payload={
+            "start": "00:15",
+            "end": "05:00",
+            "timestamp": "2026-03-14T00:01:00+01:00",
+            "status": "ok",
+        },
+    )
+
+    assert ("set_input_number", "input_number.ev_charge_start_soc", 20) in client.actions

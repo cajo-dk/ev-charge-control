@@ -1,5 +1,5 @@
 name: "EV Charge Control"
-version: "1.5.1"
+version: "1.6.0"
 slug: "ev_charge_control"
 description: "Calculate EV charging windows from pricing, SoC targets, and finish-by constraints."
 url: "https://github.com/cajo-dk/ev-charge-control"
@@ -25,6 +25,7 @@ options:
   cable_connected_entity: ""
   charger_control_switch_entity: ""
   schedule_authorized_entity: ""
+  soc_at_charge_start_helper_entity: ""
   pricing_information_entity: ""
   mqtt_host: ""
   mqtt_port: 1883
@@ -44,6 +45,7 @@ schema:
   cable_connected_entity: "str?"
   charger_control_switch_entity: "str?"
   schedule_authorized_entity: "str?"
+  soc_at_charge_start_helper_entity: "str?"
   pricing_information_entity: "str?"
   mqtt_host: "str?"
   mqtt_port: "port?"

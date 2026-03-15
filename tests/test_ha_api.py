@@ -58,6 +58,26 @@ def test_set_input_text_posts_expected_payload(monkeypatch: pytest.MonkeyPatch) 
     assert captured["body"]["entity_id"] == "input_text.evcc_result"
 
 
+def test_set_input_number_posts_expected_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["method"] = request.get_method()
+        captured["url"] = request.full_url
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return DummyResponse("[]")
+
+    monkeypatch.setattr("evcc.ha_api.request.urlopen", fake_urlopen)
+    client = HomeAssistantClient(base_url="http://example/api", token="secret")
+
+    client.set_input_number("input_number.ev_charge_start_soc", 42)
+
+    assert captured["method"] == "POST"
+    assert captured["url"].endswith("/services/input_number/set_value")
+    assert captured["body"]["entity_id"] == "input_number.ev_charge_start_soc"
+    assert captured["body"]["value"] == 42
+
+
 def test_turn_on_switch_posts_expected_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     captured = {}
 

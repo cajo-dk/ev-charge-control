@@ -32,6 +32,9 @@ configuration:
   schedule_authorized_entity:
     name: Schedule Authorized
     description: Entity ID for the input_boolean helper that authorizes EV Charge Control to start charging at the calculated time.
+  soc_at_charge_start_helper_entity:
+    name: Charge-start SoC helper
+    description: Optional input_number helper that EV Charge Control updates with the EV SoC captured when charging starts. EVCC writes 0 when no charge-start SoC is currently available.
   pricing_information_entity:
     name: Pricing information entity
     description: Entity ID for the pricing sensor that provides raw_today, raw_tomorrow, and forecast attributes.
