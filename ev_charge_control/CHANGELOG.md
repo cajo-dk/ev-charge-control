@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.1
+- Prevented repeated charger shutoff commands after target SoC is reached by making the auto-reset action one-shot across minute ticks.
+- Reduced scheduler noise by moving the "next calculation scheduled" heartbeat log from `INFO` to `DEBUG`.
+
 ## 1.5.0
 - Implemented the charging execution state machine from the spreadsheet-derived specification.
 - Added a required cable-connected input and derived cable/window/runtime control state on each minute tick.

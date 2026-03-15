@@ -538,7 +538,15 @@ def apply_state_machine_decision(
     state: ExecutionState,
     decision: StateMachineDecision,
     logger: logging.Logger,
+    suppress_actions: bool = False,
 ) -> bool:
+    if suppress_actions:
+        logger.debug(
+            "Suppressing repeated state machine actions for rule '%s'.",
+            decision.rule,
+        )
+        return False
+
     state_changed = False
 
     if decision.set_authorized is True and not state.schedule_authorized:
@@ -582,6 +590,7 @@ def process_minute_tick(
 
     previous_status = str((published_payload or {}).get("status", "OK"))
     previous_lock = bool((published_payload or {}).get("lock_calculation", False))
+    previous_rule = str((published_payload or {}).get("state_machine_rule", ""))
 
     decision, charge_window = evaluate_runtime_state(
         state=state,
@@ -594,12 +603,18 @@ def process_minute_tick(
         if decision.lock_calculation is not None
         else previous_lock
     )
+    effective_rule = decision.rule or previous_rule
+    suppress_actions = _should_suppress_state_machine_actions(
+        current_rule=decision.rule,
+        previous_rule=previous_rule,
+    )
     state_changed = apply_state_machine_decision(
         client=client,
         config=config,
         state=state,
         decision=decision,
         logger=logger,
+        suppress_actions=suppress_actions,
     )
     if state_changed:
         state = load_execution_state(client, config, now=now)
@@ -614,6 +629,8 @@ def process_minute_tick(
             effective_status = reloaded_decision.status
         if reloaded_decision.lock_calculation is not None:
             effective_lock = reloaded_decision.lock_calculation
+        if reloaded_decision.rule is not None:
+            effective_rule = reloaded_decision.rule
 
     if not effective_lock and should_run_calculation(now, last_calculation_time):
         published_payload = run_api_cycle_with_error_handling(
@@ -633,6 +650,7 @@ def process_minute_tick(
         )
         previous_status = str((published_payload or {}).get("status", effective_status))
         previous_lock = bool((published_payload or {}).get("lock_calculation", effective_lock))
+        previous_rule = str((published_payload or {}).get("state_machine_rule", effective_rule))
         decision, charge_window = evaluate_runtime_state(
             state=state,
             now=now,
@@ -644,12 +662,18 @@ def process_minute_tick(
             if decision.lock_calculation is not None
             else previous_lock
         )
+        effective_rule = decision.rule or previous_rule
+        suppress_actions = _should_suppress_state_machine_actions(
+            current_rule=decision.rule,
+            previous_rule=previous_rule,
+        )
         state_changed = apply_state_machine_decision(
             client=client,
             config=config,
             state=state,
             decision=decision,
             logger=logger,
+            suppress_actions=suppress_actions,
         )
         if state_changed:
             state = load_execution_state(client, config, now=now)
@@ -664,6 +688,12 @@ def process_minute_tick(
                 effective_status = reloaded_decision.status
             if reloaded_decision.lock_calculation is not None:
                 effective_lock = reloaded_decision.lock_calculation
+            if reloaded_decision.rule is not None:
+                effective_rule = reloaded_decision.rule
+
+    if published_payload is None:
+        published_payload = {}
+    published_payload["state_machine_rule"] = effective_rule
 
     published_payload = write_runtime_output(
         publisher=publisher,
@@ -734,7 +764,7 @@ def run_scheduler(
 
     while not stop_requested:
         current_time = datetime.now().astimezone()
-        logger.info("Next calculation scheduled for %s", next_scheduled_run(current_time).isoformat())
+        logger.debug("Next calculation scheduled for %s", next_scheduled_run(current_time).isoformat())
         next_tick = current_time.replace(second=0, microsecond=0) + timedelta(minutes=1)
 
         while not stop_requested:
@@ -851,6 +881,14 @@ def _format_soc_value(value: float | None) -> float | int | str:
     if float(value).is_integer():
         return int(value)
     return round(value, 3)
+
+
+def _should_suppress_state_machine_actions(
+    *,
+    current_rule: str | None,
+    previous_rule: str,
+) -> bool:
+    return current_rule == "auto_reset_soc_reached" and previous_rule == current_rule
 
 
 def _parse_mqtt_port(value: Any) -> int:
