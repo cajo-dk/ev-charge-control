@@ -55,6 +55,7 @@ class AppConfig:
     cable_connected_entity: str = ""
     charger_control_switch_entity: str = ""
     schedule_authorized_entity: str = ""
+    soc_at_charge_start_helper_entity: str = ""
     pricing_information_entity: str = ""
     mqtt_host: str = ""
     mqtt_port: int = DEFAULT_MQTT_PORT
@@ -706,6 +707,11 @@ def process_minute_tick(
         cable_state=state.cable,
         charge_window_state=charge_window,
     )
+    sync_soc_at_charge_start_helper(
+        client=client,
+        config=config,
+        soc_at_charge_start=soc_at_charge_start,
+    )
     return TickResult(last_calculation_time, soc_at_charge_start, published_payload)
 
 
@@ -758,6 +764,11 @@ def run_scheduler(
             now=startup_time,
             soc_at_charge_start=soc_at_charge_start,
             published_payload=published_payload,
+        )
+        sync_soc_at_charge_start_helper(
+            client=client,
+            config=config,
+            soc_at_charge_start=soc_at_charge_start,
         )
     except HomeAssistantApiError as exc:
         logger.error("Execution check failed at startup: %s", exc)
@@ -881,6 +892,27 @@ def _format_soc_value(value: float | None) -> float | int | str:
     if float(value).is_integer():
         return int(value)
     return round(value, 3)
+
+
+def sync_soc_at_charge_start_helper(
+    *,
+    client: HomeAssistantClient,
+    config: AppConfig,
+    soc_at_charge_start: float | None,
+) -> None:
+    entity_id = config.soc_at_charge_start_helper_entity.strip()
+    if not entity_id:
+        return
+
+    desired_value = 0.0 if soc_at_charge_start is None else soc_at_charge_start
+    current_value = parse_percentage_value(
+        client.get_entity_value(entity_id),
+        "soc_at_charge_start_helper_entity",
+    )
+    if current_value == desired_value:
+        return
+
+    client.set_input_number(entity_id, _format_soc_value(desired_value))
 
 
 def _should_suppress_state_machine_actions(

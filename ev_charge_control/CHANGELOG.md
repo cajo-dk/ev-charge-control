@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.6.0
+- Added an optional `input_number` helper output for the SoC captured when charging starts.
+- Synchronized the helper through the Home Assistant API without rewriting unchanged values.
+- Reset the helper to `0` when no charge-start SoC is currently available.
+
 ## 1.5.1
 - Prevented repeated charger shutoff commands after target SoC is reached by making the auto-reset action one-shot across minute ticks.
 - Reduced scheduler noise by moving the "next calculation scheduled" heartbeat log from `INFO` to `DEBUG`.

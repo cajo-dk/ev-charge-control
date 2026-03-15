@@ -42,6 +42,13 @@ class HomeAssistantClient:
             payload={"entity_id": entity_id, "value": value},
         )
 
+    def set_input_number(self, entity_id: str, value: float | int) -> None:
+        self._request_json(
+            "/services/input_number/set_value",
+            method="POST",
+            payload={"entity_id": entity_id, "value": value},
+        )
+
     def turn_on_switch(self, entity_id: str) -> None:
         self._request_json(
             "/services/switch/turn_on",
