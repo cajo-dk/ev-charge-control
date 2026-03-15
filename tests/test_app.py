@@ -21,6 +21,7 @@ from evcc.app import (
     validate_config,
 )
 from evcc.ha_api import HomeAssistantApiError
+from evcc.runtime import NO_SCHEDULE_TIME
 
 
 class DummyClient:
@@ -251,6 +252,7 @@ def test_is_schedule_due_ignores_blank_or_error_payloads() -> None:
     assert not is_schedule_due(None, now=now)
     assert not is_schedule_due({"status": "boom", "start": "00:15"}, now=now)
     assert not is_schedule_due({"status": "ok", "start": ""}, now=now)
+    assert not is_schedule_due({"status": "ok", "start": NO_SCHEDULE_TIME}, now=now)
 
 
 def test_build_output_payload_adds_runtime_fields() -> None:
@@ -565,7 +567,7 @@ def test_sync_schedule_helpers_skip_unchanged_values() -> None:
     assert client.actions == []
 
 
-def test_sync_schedule_helpers_write_empty_strings_when_values_missing() -> None:
+def test_sync_schedule_helpers_write_placeholder_when_values_missing() -> None:
     client = DummyClient()
     client.entity_values["input_text.ev_charge_start"] = "00:15"
     client.entity_values["input_text.ev_charge_end"] = "05:00"
@@ -579,8 +581,8 @@ def test_sync_schedule_helpers_write_empty_strings_when_values_missing() -> None
         payload={"start": "", "end": ""},
     )
 
-    assert ("set_input_text", "input_text.ev_charge_start", "") in client.actions
-    assert ("set_input_text", "input_text.ev_charge_end", "") in client.actions
+    assert ("set_input_text", "input_text.ev_charge_start", NO_SCHEDULE_TIME) in client.actions
+    assert ("set_input_text", "input_text.ev_charge_end", NO_SCHEDULE_TIME) in client.actions
 
 
 def test_process_minute_tick_updates_schedule_helpers_from_runtime_payload() -> None:

@@ -4,6 +4,7 @@ import pytest
 
 from evcc.ha_api import HomeAssistantApiError
 from evcc.runtime import (
+    NO_SCHEDULE_TIME,
     LiveInputs,
     PricingPayload,
     calculate_result,
@@ -61,7 +62,7 @@ def test_calculate_result_selects_cheapest_valid_window() -> None:
     assert payload["end"] == "02:15"
 
 
-def test_calculate_result_returns_blank_window_when_charge_not_needed() -> None:
+def test_calculate_result_returns_placeholder_window_when_charge_not_needed() -> None:
     live_inputs = LiveInputs(
         ev_current_soc="80",
         target_soc="70",
@@ -83,8 +84,8 @@ def test_calculate_result_returns_blank_window_when_charge_not_needed() -> None:
     )
 
     assert payload["status"] == "ok"
-    assert payload["start"] == ""
-    assert payload["end"] == ""
+    assert payload["start"] == NO_SCHEDULE_TIME
+    assert payload["end"] == NO_SCHEDULE_TIME
 
 
 def test_calculate_result_uses_next_day_when_finish_by_has_passed() -> None:

@@ -13,6 +13,7 @@ from typing import Any
 from evcc.ha_api import HomeAssistantApiError, HomeAssistantClient
 from evcc.mqtt_output import MQTTOutputPublisher
 from evcc.runtime import (
+    NO_SCHEDULE_TIME,
     build_error_result,
     calculate_result,
     load_live_inputs,
@@ -328,7 +329,7 @@ def derive_charge_window(
     start = str(published_payload.get("start", "")).strip()
     end = str(published_payload.get("end", "")).strip()
     timestamp = str(published_payload.get("timestamp", "")).strip()
-    if not start or not end or not timestamp:
+    if not start or not end or not timestamp or start == NO_SCHEDULE_TIME or end == NO_SCHEDULE_TIME:
         return None
 
     start_at = resolve_schedule_start(start=start, timestamp=timestamp, now=now)
@@ -442,7 +443,7 @@ def is_schedule_due(result_payload: dict[str, Any] | None, *, now: datetime) -> 
 
     start = str(result_payload.get("start", "")).strip()
     timestamp = str(result_payload.get("timestamp", "")).strip()
-    if not start or not timestamp:
+    if not start or not timestamp or start == NO_SCHEDULE_TIME:
         return False
 
     return now >= resolve_schedule_start(start=start, timestamp=timestamp, now=now)
@@ -936,13 +937,13 @@ def sync_schedule_helpers(
     _sync_input_text_helper(
         client=client,
         entity_id=config.calculated_start_helper_entity,
-        value=str(payload.get("start", "")),
+        value=_normalize_schedule_helper_value(payload.get("start")),
         field_name="calculated_start_helper_entity",
     )
     _sync_input_text_helper(
         client=client,
         entity_id=config.calculated_end_helper_entity,
-        value=str(payload.get("end", "")),
+        value=_normalize_schedule_helper_value(payload.get("end")),
         field_name="calculated_end_helper_entity",
     )
 
@@ -964,6 +965,11 @@ def _sync_input_text_helper(
         return
 
     client.set_input_text(normalized_entity_id, value)
+
+
+def _normalize_schedule_helper_value(value: Any) -> str:
+    normalized = "" if value is None else str(value).strip()
+    return normalized or NO_SCHEDULE_TIME
 
 
 def _should_suppress_state_machine_actions(
