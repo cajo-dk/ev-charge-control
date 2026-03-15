@@ -402,3 +402,45 @@ def test_process_minute_tick_recalculates_when_lock_releases_at_target_soc() -> 
     assert publisher.outputs[-1]["charger_enabled"] is False
     assert publisher.outputs[-1]["status"] == "OK"
     assert publisher.outputs[-1]["lock_calculation"] is False
+
+
+def test_process_minute_tick_only_resets_once_when_target_soc_is_already_reached() -> None:
+    class StickyChargerClient(DummyClient):
+        def turn_off_switch(self, entity_id: str) -> None:
+            self.actions.append(("turn_off_switch", entity_id))
+
+    client = StickyChargerClient()
+    publisher = DummyPublisher()
+    client.entity_values["switch.ev_charger_control"] = "on"
+    client.entity_values["sensor.ev_current_soc"] = "80"
+    client.entity_values["input_number.ev_target_soc"] = "80"
+
+    first_result = process_minute_tick(
+        client=client,
+        publisher=publisher,
+        config=build_config(),
+        logger=logging.getLogger("test"),
+        now=datetime.fromisoformat("2026-03-14T00:16:00+01:00"),
+        last_calculation_time=datetime.fromisoformat("2026-03-14T00:01:00+01:00"),
+        soc_at_charge_start=20.0,
+        published_payload={
+            "status": "OK",
+            "start": "00:15",
+            "end": "05:00",
+            "timestamp": "2026-03-14T00:01:00+01:00",
+        },
+    )
+
+    second_result = process_minute_tick(
+        client=client,
+        publisher=publisher,
+        config=build_config(),
+        logger=logging.getLogger("test"),
+        now=datetime.fromisoformat("2026-03-14T00:17:00+01:00"),
+        last_calculation_time=first_result.last_calculation_time,
+        soc_at_charge_start=first_result.soc_at_charge_start,
+        published_payload=first_result.published_payload,
+    )
+
+    assert client.actions.count(("turn_off_switch", "switch.ev_charger_control")) == 1
+    assert second_result.published_payload["state_machine_rule"] == "auto_reset_soc_reached"
