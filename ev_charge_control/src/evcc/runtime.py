@@ -9,6 +9,7 @@ from typing import Any
 from evcc.ha_api import HomeAssistantApiError, HomeAssistantClient
 
 PRICE_INTERVAL = timedelta(minutes=15)
+NO_SCHEDULE_TIME = "--:--"
 
 
 @dataclass(slots=True)
@@ -66,8 +67,8 @@ def load_live_inputs(client: HomeAssistantClient, config: Any) -> LiveInputs:
 def build_placeholder_result(now: datetime | None = None) -> dict[str, str]:
     timestamp = (now or datetime.now().astimezone()).isoformat()
     return {
-        "start": "",
-        "end": "",
+        "start": NO_SCHEDULE_TIME,
+        "end": NO_SCHEDULE_TIME,
         "timestamp": timestamp,
         "status": "ok",
     }

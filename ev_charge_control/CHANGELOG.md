@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.7.1
+- Replaced blank calculated start and end placeholders with `--:--` when no schedule is available.
+- Aligned helper synchronization and runtime schedule checks with the new no-schedule placeholder.
+
 ## 1.7.0
 - Added optional `input_text` helper outputs for the calculated charging start and end times.
 - Synchronized the helpers from the finalized runtime payload without rewriting unchanged values.
