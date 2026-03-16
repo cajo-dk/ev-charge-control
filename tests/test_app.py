@@ -590,6 +590,64 @@ def test_process_minute_tick_keeps_soc_at_charge_start_constant_while_charging_i
     assert publisher.outputs[-1]["soc_at_charge_start"] == 20
 
 
+def test_process_minute_tick_logs_charge_progress_every_15_minutes(caplog) -> None:
+    client = DummyClient()
+    publisher = DummyPublisher()
+    client.entity_values["switch.ev_charger_control"] = "on"
+    client.entity_values["sensor.ev_current_soc"] = "25"
+    logger = logging.getLogger("test.charge_progress")
+
+    with caplog.at_level(logging.INFO, logger=logger.name):
+        process_minute_tick(
+            client=client,
+            publisher=publisher,
+            config=build_config(),
+            logger=logger,
+            now=datetime.fromisoformat("2026-03-14T00:30:00+01:00"),
+            last_calculation_time=datetime.fromisoformat("2026-03-14T00:16:00+01:00"),
+            soc_at_charge_start=20.0,
+            published_payload={
+                "status": "OK",
+                "start": "00:15",
+                "end": "05:00",
+                "timestamp": "2026-03-14T00:01:00+01:00",
+                "cable_state": "Plugged",
+                "charger_enabled": True,
+            },
+        )
+
+    assert "Charge progress over MQTT" in caplog.text
+
+
+def test_process_minute_tick_does_not_log_charge_progress_off_quarter_hour(caplog) -> None:
+    client = DummyClient()
+    publisher = DummyPublisher()
+    client.entity_values["switch.ev_charger_control"] = "on"
+    client.entity_values["sensor.ev_current_soc"] = "25"
+    logger = logging.getLogger("test.charge_progress")
+
+    with caplog.at_level(logging.INFO, logger=logger.name):
+        process_minute_tick(
+            client=client,
+            publisher=publisher,
+            config=build_config(),
+            logger=logger,
+            now=datetime.fromisoformat("2026-03-14T00:17:00+01:00"),
+            last_calculation_time=datetime.fromisoformat("2026-03-14T00:16:00+01:00"),
+            soc_at_charge_start=20.0,
+            published_payload={
+                "status": "OK",
+                "start": "00:15",
+                "end": "05:00",
+                "timestamp": "2026-03-14T00:01:00+01:00",
+                "cable_state": "Plugged",
+                "charger_enabled": True,
+            },
+        )
+
+    assert "Charge progress over MQTT" not in caplog.text
+
+
 def test_sync_schedule_helpers_write_start_and_end_values() -> None:
     client = DummyClient()
 

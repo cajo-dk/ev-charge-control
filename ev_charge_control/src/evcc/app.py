@@ -702,6 +702,7 @@ def process_minute_tick(
     published_payload["state_machine_rule"] = effective_rule
 
     published_payload = write_runtime_output(
+        logger=logger,
         publisher=publisher,
         state=state,
         now=now,
@@ -769,6 +770,7 @@ def run_scheduler(
             execute_due_schedule(client=client, config=config, logger=logger)
             state = load_execution_state(client, config, now=startup_time)
         published_payload = write_runtime_output(
+            logger=logger,
             publisher=publisher,
             state=state,
             now=startup_time,
@@ -1001,6 +1003,7 @@ def _parse_mqtt_port(value: Any) -> int:
 
 def write_runtime_output(
     *,
+    logger: logging.Logger,
     publisher: MQTTOutputPublisher,
     state: ExecutionState,
     now: datetime,
@@ -1026,7 +1029,13 @@ def write_runtime_output(
         status=status,
     )
     publisher.publish_output(output_payload)
+    if _should_log_charge_progress(now=now, state=state):
+        logger.info("Charge progress over MQTT: %s", output_payload)
     return output_payload
+
+
+def _should_log_charge_progress(*, now: datetime, state: ExecutionState) -> bool:
+    return state.charger_enabled and now.minute % 15 == 0
 
 
 if __name__ == "__main__":

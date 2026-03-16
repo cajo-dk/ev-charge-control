@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.7.3
+- Logged charge-progress MQTT messages at `INFO` every 15 minutes while charging remains active.
+- Kept regular runtime MQTT publishing unchanged while avoiding per-minute progress log spam.
+
 ## 1.7.2
 - Captured `soc_at_charge_start` when the charging cable transitions from unplugged to plugged.
 - Preserved the captured start SoC while charging remains on instead of overwriting it on later ticks.
