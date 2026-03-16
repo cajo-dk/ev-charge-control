@@ -245,16 +245,23 @@ Every version change must also update `ev_charge_control/CHANGELOG.md` before th
 
 - New features must start with an approved FR documented from `doc/fr-xxx.md`.
 - Feature work must be implemented on a branch named after the FR, for example `fr-001`.
+- Any feature branch intended for release must be merged into `main` before the release commit is created.
+- After the feature branch has been merged and is no longer needed, it should be removed.
 
 ### 8.3 Fixes
 
 - Fix work must be documented using the `doc/fix-xxx.md` template when deployed.
 - Fix work must be implemented on a branch named after the fix, for example `fix-001`.
+- Any fix branch intended for release must be merged into `main` before the release commit is created.
+- After the fix branch has been merged and is no longer needed, it should be removed.
 - If the code is being committed at a new fix level, the matching `fix-xxx.md` document must be created before the commit is pushed and before the release tag is created.
 
 ### 8.4 Releases
 
 - Release 1 is governed by this document.
+- Releases may only be made from the `main` branch.
+- Before releasing, any intended changes from `fr-xxx` and `fix-xxx` branches must be merged into `main`.
+- After merging, the now-redundant `fr-xxx` or `fix-xxx` branch should be removed.
 - Future release documentation may be added separately, but it must remain consistent with this context unless this file is updated.
 
 ## 9. Decision Guidance
@@ -280,6 +287,7 @@ The following topics are recognized as likely to need refinement after Release 1
 
 | Revision | Date (YYYY.MM.DD) | Notes                                                                                                        |
 | -------- | ----------------- | ------------------------------------------------------------------------------------------------------------ |
+| 1.1.4    | 2026.03.16        | Clarified that releases may only be created from `main`, that release-bound `fr-` and `fix-` branches must be merged first, and that merged branches should then be removed. |
 | 1.1.3    | 2026.03.14        | Clarified that the changelog must be updated before the release commit is created, not only before push or tag. |
 | 1.1.2    | 2026.03.14        | Added the requirement to maintain `ev_charge_control/CHANGELOG.md` whenever the application version changes. |
 | 1.1.1    | 2026.03.14        | Clarified that fix documents must be created before pushing and tagging a new fix-level release. |

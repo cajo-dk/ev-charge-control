@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.7.4
+- Clarified that releases may only be created from `main`.
+- Required release-bound `fr-xxx` and `fix-xxx` branches to be merged into `main` before release and removed afterward.
+
 ## 1.7.3
 - Logged charge-progress MQTT messages at `INFO` every 15 minutes while charging remains active.
 - Kept regular runtime MQTT publishing unchanged while avoiding per-minute progress log spam.
