@@ -1,12 +1,12 @@
 name: "EV Charge Control"
-version: "1.7.4"
+version: "2.0.0"
 slug: "ev_charge_control"
 description: "Calculate EV charging windows from pricing, SoC targets, and finish-by constraints."
 url: "https://github.com/cajo-dk/ev-charge-control"
 startup: "application"
 boot: "auto"
 init: false
-homeassistant_api: true
+homeassistant_api: false
 arch:
   - amd64
   - aarch64
@@ -15,20 +15,6 @@ arch:
   - i386
 options:
   log_level: "info"
-  ev_current_soc_entity: ""
-  target_soc_entity: ""
-  ev_battery_capacity_entity: ""
-  charger_speed_entity: ""
-  charge_loss_entity: ""
-  finish_by_entity: ""
-  nighttime_charging_only_entity: ""
-  cable_connected_entity: ""
-  charger_control_switch_entity: ""
-  schedule_authorized_entity: ""
-  soc_at_charge_start_helper_entity: ""
-  calculated_start_helper_entity: ""
-  calculated_end_helper_entity: ""
-  pricing_information_entity: ""
   mqtt_host: ""
   mqtt_port: 1883
   mqtt_username: ""
@@ -37,20 +23,6 @@ options:
   mqtt_topic_prefix: "ev_charge_control"
 schema:
   log_level: "list(trace|debug|info|notice|warning|error|fatal)?"
-  ev_current_soc_entity: "str?"
-  target_soc_entity: "str?"
-  ev_battery_capacity_entity: "str?"
-  charger_speed_entity: "str?"
-  charge_loss_entity: "str?"
-  finish_by_entity: "str?"
-  nighttime_charging_only_entity: "str?"
-  cable_connected_entity: "str?"
-  charger_control_switch_entity: "str?"
-  schedule_authorized_entity: "str?"
-  soc_at_charge_start_helper_entity: "str?"
-  calculated_start_helper_entity: "str?"
-  calculated_end_helper_entity: "str?"
-  pricing_information_entity: "str?"
   mqtt_host: "str?"
   mqtt_port: "port?"
   mqtt_username: "str?"

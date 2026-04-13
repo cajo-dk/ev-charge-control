@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.0
+- Replaced the Home Assistant entity-ID runtime model with MQTT-owned controls, sensors, and a Start button on the EVCC device.
+- Kept only MQTT broker and log-level settings in add-on configuration while preserving the aggregate MQTT compatibility sensor.
+- Added minute-by-minute `status_message` and `status_level` publishing, charger-command separation from observed charger state, and MQTT-backed runtime tests.
+
 ## 1.7.4
 - Clarified that releases may only be created from `main`.
 - Required release-bound `fr-xxx` and `fix-xxx` branches to be merged into `main` before release and removed afterward.

@@ -17,8 +17,10 @@ class FakeMqttClient:
         self.password = None
         self.connected = None
         self.published: list[tuple[str, str, int, bool]] = []
+        self.subscriptions: list[tuple[str, int]] = []
         self.on_connect = None
         self.on_disconnect = None
+        self.on_message = None
         self.loop_started = False
         self.loop_stopped = False
         self.disconnected = False
@@ -43,6 +45,25 @@ class FakeMqttClient:
         self.published.append((topic, payload, qos, retain))
         return FakePublishResult()
 
+    def subscribe(self, topic, qos=0):
+        self.subscriptions.append((topic, qos))
+        return (0, 1)
+
+
+class Snapshot:
+    current_soc = "20"
+    target_soc = "80"
+    battery_capacity = "77"
+    charger_speed = "11"
+    charge_loss = "10"
+    finish_by = "06:30"
+    nighttime_charging_only = False
+    cable_connected = True
+    schedule_authorized = True
+    charger_state = False
+    charger_command = False
+    pricing_information = "{\"raw_today\":[],\"raw_tomorrow\":null,\"forecast\":null}"
+
 
 def test_publisher_starts_and_publishes_discovery(monkeypatch) -> None:
     fake_client = FakeMqttClient()
@@ -65,13 +86,16 @@ def test_publisher_starts_and_publishes_discovery(monkeypatch) -> None:
     assert fake_client.password == "pass"
     assert fake_client.connected == ("mqtt.local", 1883, 60)
     assert fake_client.loop_started is True
-    discovery = next(item for item in fake_client.published if item[0] == "homeassistant/sensor/ev_charge_control/config")
-    payload = json.loads(discovery[1])
-    assert payload["state_topic"] == "evcc/state"
-    assert payload["json_attributes_topic"] == "evcc/attributes"
+    aggregate = next(item for item in fake_client.published if item[0] == "homeassistant/sensor/ev_charge_control/config")
+    aggregate_payload = json.loads(aggregate[1])
+    assert aggregate_payload["state_topic"] == "evcc/state"
+    assert aggregate_payload["json_attributes_topic"] == "evcc/attributes"
+    assert ("evcc/controls/current_soc/set", 1) in fake_client.subscriptions
+    assert ("evcc/sensors/charger_state/state", 1) in fake_client.subscriptions
+    assert ("evcc/actions/start/press", 1) in fake_client.subscriptions
 
 
-def test_publisher_publishes_state_and_attributes(monkeypatch) -> None:
+def test_publisher_publishes_runtime_controls_and_attributes(monkeypatch) -> None:
     fake_client = FakeMqttClient()
     monkeypatch.setattr("evcc.mqtt_output.mqtt.Client", lambda *args, **kwargs: fake_client)
 
@@ -85,18 +109,55 @@ def test_publisher_publishes_state_and_attributes(monkeypatch) -> None:
         logger=logging.getLogger("test"),
     )
     publisher.start()
-    publisher.publish_output(
-        {
-            "status": "ok",
+    publisher.publish_runtime_state(
+        snapshot=Snapshot(),
+        payload={
+            "status": "OK",
             "start": "00:15",
             "end": "05:00",
-            "current_soc": 20,
-        }
+            "complete_by": "06:30",
+            "soc_at_charge_start": 20,
+            "charge_window_state": "Not Reached",
+            "status_message": "Ready",
+            "status_level": 0,
+        },
     )
 
-    assert ("evcc/state", "ok", 1, True) in fake_client.published
+    assert ("evcc/controls/current_soc/state", "20", 1, True) in fake_client.published
+    assert ("evcc/sensors/status_message/state", "Ready", 1, True) in fake_client.published
+    assert ("evcc/state", "OK", 1, True) in fake_client.published
     attributes_publish = next(item for item in fake_client.published if item[0] == "evcc/attributes")
     attributes = json.loads(attributes_publish[1])
-    assert "status" not in attributes
     assert attributes["start"] == "00:15"
-    assert attributes["current_soc"] == 20
+    assert attributes["status_message"] == "Ready"
+
+
+def test_publisher_routes_control_and_button_messages(monkeypatch) -> None:
+    fake_client = FakeMqttClient()
+    monkeypatch.setattr("evcc.mqtt_output.mqtt.Client", lambda *args, **kwargs: fake_client)
+    received: list[tuple[str, str, str]] = []
+
+    publisher = MQTTOutputPublisher(
+        host="mqtt.local",
+        port=1883,
+        username=None,
+        password=None,
+        discovery_prefix="homeassistant",
+        topic_prefix="evcc",
+        logger=logging.getLogger("test"),
+    )
+    publisher.set_message_handler(lambda message_type, key, payload: received.append((message_type, key, payload)))
+    publisher.start()
+
+    class Message:
+        def __init__(self, topic: str, payload: str) -> None:
+            self.topic = topic
+            self.payload = payload.encode("utf-8")
+
+    fake_client.on_message(fake_client, None, Message("evcc/controls/current_soc/set", "42"))
+    fake_client.on_message(fake_client, None, Message("evcc/actions/start/press", "PRESS"))
+    fake_client.on_message(fake_client, None, Message("evcc/sensors/charger_state/state", "ON"))
+
+    assert ("control", "current_soc", "42") in received
+    assert ("button", "start", "PRESS") in received
+    assert ("sensor", "charger_state", "ON") in received
