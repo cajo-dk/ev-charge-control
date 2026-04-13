@@ -1,12 +1,12 @@
 name: "EV Charge Control"
-version: "2.0.0"
+version: "2.1.0"
 slug: "ev_charge_control"
 description: "Calculate EV charging windows from pricing, SoC targets, and finish-by constraints."
 url: "https://github.com/cajo-dk/ev-charge-control"
 startup: "application"
 boot: "auto"
 init: false
-homeassistant_api: false
+homeassistant_api: true
 arch:
   - amd64
   - aarch64
@@ -21,6 +21,9 @@ options:
   mqtt_password: ""
   mqtt_discovery_prefix: "homeassistant"
   mqtt_topic_prefix: "ev_charge_control"
+  pricing_information_entity: ""
+  charger_control_switch_entity: ""
+  charger_state_sensor_entity: ""
 schema:
   log_level: "list(trace|debug|info|notice|warning|error|fatal)?"
   mqtt_host: "str?"
@@ -29,3 +32,6 @@ schema:
   mqtt_password: "password?"
   mqtt_discovery_prefix: "str?"
   mqtt_topic_prefix: "str?"
+  pricing_information_entity: "str?"
+  charger_control_switch_entity: "str?"
+  charger_state_sensor_entity: "str?"

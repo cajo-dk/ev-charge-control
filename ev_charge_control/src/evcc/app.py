@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from evcc.ha_api import HomeAssistantApiError
+from evcc.ha_api import HomeAssistantApiError, HomeAssistantClient
 from evcc.mqtt_output import MQTTOutputPublisher
 from evcc.runtime import (
     NO_SCHEDULE_TIME,
@@ -52,6 +52,9 @@ class AppConfig:
     mqtt_password: str = ""
     mqtt_discovery_prefix: str = DEFAULT_MQTT_DISCOVERY_PREFIX
     mqtt_topic_prefix: str = DEFAULT_MQTT_TOPIC_PREFIX
+    pricing_information_entity: str = ""
+    charger_control_switch_entity: str = ""
+    charger_state_sensor_entity: str = ""
 
     @classmethod
     def from_mapping(cls, raw: dict[str, Any]) -> "AppConfig":
@@ -79,10 +82,8 @@ class RuntimeSnapshot:
     charge_loss: str | None = None
     finish_by: str | None = None
     nighttime_charging_only: bool = False
-    cable_connected: bool = False
     schedule_authorized: bool = False
-    charger_state: bool = False
-    charger_command: bool = False
+    charger_state: str = "disconnected"
     pricing_information: str = ""
     start_requests: int = 0
 
@@ -95,7 +96,7 @@ class ExecutionState:
     finish_by: datetime | None
     charger_enabled: bool
     schedule_authorized: bool
-    charger_command: bool
+    charger_state: str
 
 
 @dataclass(slots=True)
@@ -105,6 +106,7 @@ class RuntimeMemory:
     published_payload: dict[str, Any] | None = None
     completion_time: str | None = None
     last_charger_enabled: bool | None = None
+    charger_command: bool = False
 
 
 @dataclass(slots=True)
@@ -114,6 +116,7 @@ class TickResult:
     published_payload: dict[str, Any] | None
     completion_time: str | None
     last_charger_enabled: bool | None
+    charger_command: bool
 
 
 @dataclass(slots=True)
@@ -140,10 +143,8 @@ class MqttStateStore:
                 charge_loss=self._snapshot.charge_loss,
                 finish_by=self._snapshot.finish_by,
                 nighttime_charging_only=self._snapshot.nighttime_charging_only,
-                cable_connected=self._snapshot.cable_connected,
                 schedule_authorized=self._snapshot.schedule_authorized,
                 charger_state=self._snapshot.charger_state,
-                charger_command=self._snapshot.charger_command,
                 pricing_information=self._snapshot.pricing_information,
                 start_requests=self._snapshot.start_requests,
             )
@@ -161,9 +162,6 @@ class MqttStateStore:
     def handle_message(self, message_type: str, key: str, payload: str) -> None:
         if message_type == "button" and key == "start":
             self.press_start()
-            return
-        if message_type == "sensor" and key == "charger_state":
-            self.update_value(key, payload)
             return
         if message_type == "control":
             self.update_value(key, payload)
@@ -223,6 +221,12 @@ def validate_config(config: AppConfig) -> list[str]:
     missing_fields = []
     if not config.mqtt_host.strip():
         missing_fields.append("mqtt_host")
+    if not config.pricing_information_entity.strip():
+        missing_fields.append("pricing_information_entity")
+    if not config.charger_control_switch_entity.strip():
+        missing_fields.append("charger_control_switch_entity")
+    if not config.charger_state_sensor_entity.strip():
+        missing_fields.append("charger_state_sensor_entity")
     return missing_fields
 
 
@@ -272,6 +276,14 @@ def create_mqtt_publisher(
     return publisher
 
 
+def create_home_assistant_client() -> HomeAssistantClient | None:
+    token = os.getenv("SUPERVISOR_TOKEN", "").strip()
+    if not token:
+        return None
+    base_url = os.getenv("HOME_ASSISTANT_API_URL", "http://supervisor/core/api")
+    return HomeAssistantClient(base_url=base_url, token=token)
+
+
 def should_run_calculation(
     current_time: datetime,
     last_calculation_time: datetime | None,
@@ -288,13 +300,13 @@ def should_run_calculation(
 
 def load_execution_state(snapshot: RuntimeSnapshot, *, now: datetime) -> ExecutionState:
     return ExecutionState(
-        cable=CABLE_PLUGGED if snapshot.cable_connected else CABLE_UNPLUGGED,
+        cable=_charger_state_to_cable(snapshot.charger_state),
         current_soc=_try_parse_percentage(snapshot.current_soc, "current_soc"),
         target_soc=_try_parse_percentage(snapshot.target_soc, "target_soc"),
         finish_by=_try_parse_finish_by(snapshot.finish_by, now),
-        charger_enabled=snapshot.charger_state,
+        charger_enabled=_charger_state_is_charging(snapshot.charger_state),
         schedule_authorized=snapshot.schedule_authorized,
-        charger_command=snapshot.charger_command,
+        charger_state=snapshot.charger_state,
     )
 
 
@@ -377,6 +389,8 @@ def build_output_payload(
     status: str | None = None,
     status_message: str = "Ready",
     status_level: int = 0,
+    charger_state: str = "",
+    pricing_information: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     output_payload = dict(payload)
     if status is not None:
@@ -392,6 +406,8 @@ def build_output_payload(
     output_payload["charge_window_state"] = charge_window_state or ""
     output_payload["status_message"] = status_message
     output_payload["status_level"] = status_level
+    output_payload["charger_state"] = charger_state
+    output_payload["pricing_information"] = pricing_information or {}
     output_payload["lock_calculation"] = (
         lock_calculation
         if lock_calculation is not None
@@ -480,6 +496,8 @@ def _resolve_schedule_clock(*, end: str, timestamp: str, now: datetime) -> datet
 
 def process_runtime_tick(
     *,
+    client: HomeAssistantClient,
+    config: AppConfig,
     store: MqttStateStore,
     publisher: MQTTOutputPublisher,
     logger: logging.Logger,
@@ -487,8 +505,14 @@ def process_runtime_tick(
     memory: RuntimeMemory,
     force_recalculate: bool,
 ) -> TickResult:
+    home_assistant_changed = sync_home_assistant_state(
+        client=client,
+        config=config,
+        store=store,
+    )
     snapshot = store.snapshot()
     state = load_execution_state(snapshot, now=now)
+    charger_command = memory.charger_command
     soc_at_charge_start = _resolve_soc_at_charge_start(
         existing_value=memory.soc_at_charge_start,
         published_payload=memory.published_payload,
@@ -504,13 +528,16 @@ def process_runtime_tick(
         now=now,
     )
 
-    _apply_start_requests(
+    charger_command = _apply_start_requests(
+        client=client,
+        config=config,
         store=store,
         publisher=publisher,
         state=state,
         now=now,
         published_payload=memory.published_payload,
         logger=logger,
+        charger_command=charger_command,
     )
     snapshot = store.snapshot()
     state = load_execution_state(snapshot, now=now)
@@ -531,19 +558,22 @@ def process_runtime_tick(
         else previous_lock
     )
     effective_rule = decision.rule or previous_rule
-    _apply_state_machine_decision(
+    charger_command = _apply_state_machine_decision(
+        client=client,
+        config=config,
         store=store,
         publisher=publisher,
         state=state,
         decision=decision,
         logger=logger,
+        charger_command=charger_command,
     )
 
     snapshot = store.snapshot()
     state = load_execution_state(snapshot, now=now)
     charge_window = derive_charge_window(memory.published_payload, now=now)
 
-    if not effective_lock and (force_recalculate or should_run_calculation(now, memory.last_calculation_time)):
+    if not effective_lock and ((force_recalculate or home_assistant_changed) or should_run_calculation(now, memory.last_calculation_time)):
         calculation_payload = run_calculation_with_error_handling(snapshot, now=now)
         memory.last_calculation_time = now
         if str(calculation_payload.get("status", "")) != "ok":
@@ -564,12 +594,15 @@ def process_runtime_tick(
             else bool(memory.published_payload.get("lock_calculation", effective_lock))
         )
         effective_rule = decision.rule or effective_rule
-        _apply_state_machine_decision(
+        charger_command = _apply_state_machine_decision(
+            client=client,
+            config=config,
             store=store,
             publisher=publisher,
             state=state,
             decision=decision,
             logger=logger,
+            charger_command=charger_command,
         )
         snapshot = store.snapshot()
         state = load_execution_state(snapshot, now=now)
@@ -587,7 +620,7 @@ def process_runtime_tick(
         finish_by=state.finish_by,
         schedule_authorized=state.schedule_authorized,
         charger_enabled=state.charger_enabled,
-        charger_command=state.charger_command,
+        charger_command=charger_command,
         current_soc=state.current_soc,
         target_soc=state.target_soc,
         soc_at_charge_start=soc_at_charge_start,
@@ -597,6 +630,8 @@ def process_runtime_tick(
         status=effective_status,
         status_message=status_details.message,
         status_level=status_details.level,
+        charger_state=state.charger_state,
+        pricing_information=_try_load_pricing_information(snapshot.pricing_information),
     )
     publisher.publish_runtime_state(snapshot=snapshot, payload=output_payload)
     if _should_log_charge_progress(now=now, state=state):
@@ -608,11 +643,14 @@ def process_runtime_tick(
         published_payload=output_payload,
         completion_time=status_details.completion_time,
         last_charger_enabled=state.charger_enabled,
+        charger_command=charger_command,
     )
 
 
 def run_scheduler(
     *,
+    client: HomeAssistantClient,
+    config: AppConfig,
     publisher: MQTTOutputPublisher,
     store: MqttStateStore,
     logger: logging.Logger,
@@ -632,6 +670,8 @@ def run_scheduler(
 
     startup_time = datetime.now().astimezone().replace(second=0, microsecond=0)
     tick_result = process_runtime_tick(
+        client=client,
+        config=config,
         store=store,
         publisher=publisher,
         logger=logger,
@@ -644,6 +684,7 @@ def run_scheduler(
     memory.published_payload = tick_result.published_payload
     memory.completion_time = tick_result.completion_time
     memory.last_charger_enabled = tick_result.last_charger_enabled
+    memory.charger_command = tick_result.charger_command
 
     while not stop_requested:
         current_time = datetime.now().astimezone()
@@ -657,6 +698,8 @@ def run_scheduler(
         tick_time = datetime.now().astimezone().replace(second=0, microsecond=0)
         try:
             tick_result = process_runtime_tick(
+                client=client,
+                config=config,
                 store=store,
                 publisher=publisher,
                 logger=logger,
@@ -669,6 +712,7 @@ def run_scheduler(
             memory.published_payload = tick_result.published_payload
             memory.completion_time = tick_result.completion_time
             memory.last_charger_enabled = tick_result.last_charger_enabled
+            memory.charger_command = tick_result.charger_command
         except HomeAssistantApiError as exc:
             logger.error("Minute execution tick failed: %s", exc)
 
@@ -692,10 +736,21 @@ def main() -> int:
         logger.warning("Configuration is incomplete. Missing required options: %s", ", ".join(missing_fields))
         return wait_for_shutdown()
 
+    client = create_home_assistant_client()
+    if client is None:
+        logger.error("SUPERVISOR_TOKEN is not available. Home Assistant API integration is required.")
+        return wait_for_shutdown()
+
     store = MqttStateStore()
     publisher = create_mqtt_publisher(config, logger, store)
     logger.info("EV Charge Control service is running.")
-    return run_scheduler(publisher=publisher, store=store, logger=logger)
+    return run_scheduler(
+        client=client,
+        config=config,
+        publisher=publisher,
+        store=store,
+        logger=logger,
+    )
 
 
 def load_live_inputs_from_snapshot(snapshot: RuntimeSnapshot) -> LiveInputs:
@@ -768,16 +823,19 @@ def derive_status_details(
 
 def _apply_start_requests(
     *,
+    client: HomeAssistantClient,
+    config: AppConfig,
     store: MqttStateStore,
     publisher: MQTTOutputPublisher,
     state: ExecutionState,
     now: datetime,
     published_payload: dict[str, Any] | None,
     logger: logging.Logger,
-) -> None:
+    charger_command: bool = False,
+) -> bool:
     presses = store.consume_start_requests()
     if presses <= 0:
-        return
+        return charger_command
     _set_control_value(store, publisher, "schedule_authorized", True)
     logger.info("Received MQTT Start button press; authorization enabled.")
     charge_window = derive_charge_window(published_payload, now=now)
@@ -788,24 +846,31 @@ def _apply_start_requests(
         and state.current_soc < state.target_soc
         and charge_window == WINDOW_IN_WINDOW
     ):
-        _set_control_value(store, publisher, "charger_command", True)
+        _set_charger_switch(client=client, config=config, enabled=True)
         logger.info("Start button triggered charger command because the session is already in window.")
+        return True
+    return charger_command
 
 
 def _apply_state_machine_decision(
     *,
+    client: HomeAssistantClient,
+    config: AppConfig,
     store: MqttStateStore,
     publisher: MQTTOutputPublisher,
     state: ExecutionState,
     decision: StateMachineDecision,
     logger: logging.Logger,
-) -> None:
+    charger_command: bool,
+) -> bool:
     if decision.set_authorized is not None and decision.set_authorized != state.schedule_authorized:
         _set_control_value(store, publisher, "schedule_authorized", decision.set_authorized)
         logger.info("State machine set authorization to %s.", decision.set_authorized)
-    if decision.set_charging is not None and decision.set_charging != state.charger_command:
-        _set_control_value(store, publisher, "charger_command", decision.set_charging)
+    if decision.set_charging is not None and decision.set_charging != charger_command:
+        _set_charger_switch(client=client, config=config, enabled=decision.set_charging)
         logger.info("State machine set charger command to %s.", decision.set_charging)
+        return decision.set_charging
+    return charger_command
 
 
 def _resolve_soc_at_charge_start(
@@ -871,6 +936,38 @@ def _set_control_value(
         publisher.publish_control_state(key, value)
 
 
+def _set_charger_switch(
+    *,
+    client: HomeAssistantClient,
+    config: AppConfig,
+    enabled: bool,
+) -> None:
+    if enabled:
+        client.turn_on_switch(config.charger_control_switch_entity)
+        return
+    client.turn_off_switch(config.charger_control_switch_entity)
+
+
+def sync_home_assistant_state(
+    *,
+    client: HomeAssistantClient,
+    config: AppConfig,
+    store: MqttStateStore,
+) -> bool:
+    changed = False
+
+    pricing_state = client.get_state(config.pricing_information_entity)
+    attributes = pricing_state.get("attributes")
+    if not isinstance(attributes, dict):
+        raise HomeAssistantApiError("Pricing entity did not contain valid attributes.")
+    normalized_pricing = _serialize_pricing_attributes(attributes)
+    changed = store.set_internal_value("pricing_information", normalized_pricing) or changed
+
+    charger_state = _parse_charger_state_value(client.get_entity_value(config.charger_state_sensor_entity))
+    changed = store.set_internal_value("charger_state", charger_state) or changed
+    return changed
+
+
 def _format_countdown(duration: timedelta) -> str:
     total_minutes = max(int(duration.total_seconds() // 60), 0)
     hours, minutes = divmod(total_minutes, 60)
@@ -902,6 +999,63 @@ def _parse_pricing_payload(raw: str | None) -> PricingPayload:
         raw_tomorrow=raw_tomorrow,
         forecast=forecast,
     )
+
+
+def _try_load_pricing_information(raw: str | None) -> dict[str, Any] | None:
+    try:
+        pricing = _parse_pricing_payload(raw)
+    except HomeAssistantApiError:
+        return None
+    return {
+        "raw_today": pricing.raw_today,
+        "raw_tomorrow": pricing.raw_tomorrow,
+        "forecast": pricing.forecast,
+    }
+
+
+def _serialize_pricing_attributes(attributes: dict[str, Any]) -> str:
+    payload = {
+        "raw_today": _coerce_pricing_list(attributes.get("raw_today"), "raw_today"),
+        "raw_tomorrow": _coerce_optional_pricing_list(attributes.get("raw_tomorrow"), "raw_tomorrow"),
+        "forecast": _coerce_optional_pricing_list(attributes.get("forecast"), "forecast"),
+    }
+    return json.dumps(payload, separators=(",", ":"))
+
+
+def _coerce_pricing_list(value: Any, field_name: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        raise HomeAssistantApiError(f"Pricing field '{field_name}' must be a list.")
+    return value
+
+
+def _coerce_optional_pricing_list(value: Any, field_name: str) -> list[dict[str, Any]] | None:
+    if value is None:
+        return None
+    return _coerce_pricing_list(value, field_name)
+
+
+def _parse_charger_state_value(value: str | float | int | None) -> str:
+    if value is None:
+        raise HomeAssistantApiError("Missing value for 'charger_state'.")
+    normalized = str(value).strip().lower()
+    if normalized not in {
+        "charging",
+        "disconnected",
+        "connected_finished_idle",
+        "connected_requesting_charge",
+    }:
+        raise HomeAssistantApiError(f"Unsupported charger state: {value}")
+    return normalized
+
+
+def _charger_state_to_cable(charger_state: str) -> str:
+    if charger_state == "disconnected":
+        return CABLE_UNPLUGGED
+    return CABLE_PLUGGED
+
+
+def _charger_state_is_charging(charger_state: str) -> bool:
+    return charger_state == "charging"
 
 
 def _parse_mqtt_port(value: Any) -> int:
@@ -996,9 +1150,5 @@ _STORE_PARSERS: dict[str, Any] = {
     "charge_loss": _parse_percentage_payload,
     "finish_by": _parse_finish_by_payload,
     "nighttime_charging_only": _parse_switch_payload,
-    "cable_connected": _parse_switch_payload,
     "schedule_authorized": _parse_switch_payload,
-    "charger_state": _parse_switch_payload,
-    "charger_command": _parse_switch_payload,
-    "pricing_information": _parse_pricing_payload_text,
 }

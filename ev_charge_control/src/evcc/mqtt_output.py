@@ -12,21 +12,18 @@ from paho.mqtt import client as mqtt
 DEFAULT_KEEPALIVE_SECONDS = 60
 
 CONTROL_DEFINITIONS = {
-    "current_soc": {"component": "number", "name": "Current SoC", "min": 0, "max": 100, "step": 1, "unit": "%"},
-    "target_soc": {"component": "number", "name": "Target SoC", "min": 0, "max": 100, "step": 1, "unit": "%"},
+    "current_soc": {"component": "number", "name": "Current SoC", "min": 0, "max": 100, "step": 1, "unit": "%", "mode": "box"},
+    "target_soc": {"component": "number", "name": "Target SoC", "min": 0, "max": 100, "step": 1, "unit": "%", "mode": "box"},
     "battery_capacity": {"component": "number", "name": "Battery Capacity", "min": 0, "max": 200, "step": 0.1, "unit": "kWh"},
     "charger_speed": {"component": "number", "name": "Charger Speed", "min": 0, "max": 100, "step": 0.1, "unit": "kW"},
-    "charge_loss": {"component": "number", "name": "Charge Loss", "min": 0, "max": 100, "step": 1, "unit": "%"},
+    "charge_loss": {"component": "number", "name": "Charge Loss", "min": 0, "max": 100, "step": 1, "unit": "%", "mode": "box"},
     "finish_by": {"component": "text", "name": "Finish By"},
     "nighttime_charging_only": {"component": "switch", "name": "Nighttime Charging Only"},
-    "cable_connected": {"component": "switch", "name": "Cable Connected"},
     "schedule_authorized": {"component": "switch", "name": "Schedule Authorized"},
-    "charger_command": {"component": "switch", "name": "Charger Command"},
-    "pricing_information": {"component": "text", "name": "Pricing Information"},
 }
 
 SENSOR_DEFINITIONS = {
-    "charger_state": {"component": "binary_sensor", "name": "Charger State"},
+    "charger_state": {"component": "sensor", "name": "Charger State"},
     "soc_at_charge_start": {"component": "sensor", "name": "SoC At Charge Start"},
     "calculated_start": {"component": "sensor", "name": "Calculated Start"},
     "calculated_end": {"component": "sensor", "name": "Calculated End"},
@@ -89,6 +86,7 @@ class MQTTOutputPublisher:
             self.publish_control_state(key, getattr(snapshot, key))
 
         sensor_values = {
+            "charger_state": getattr(snapshot, "charger_state", ""),
             "soc_at_charge_start": payload.get("soc_at_charge_start", ""),
             "calculated_start": payload.get("start", ""),
             "calculated_end": payload.get("end", ""),
@@ -158,8 +156,6 @@ class MQTTOutputPublisher:
                 if topic == self.control_command_topic(key):
                     self._message_handler("control", key, payload)
                     return
-            if topic == self.sensor_state_topic("charger_state"):
-                self._message_handler("sensor", "charger_state", payload)
         except Exception as exc:
             self.logger.warning("Failed to process MQTT message on '%s': %s", topic, exc)
 
@@ -210,7 +206,7 @@ class MQTTOutputPublisher:
         )
 
     def _subscribe_runtime_topics(self, client: mqtt.Client) -> None:
-        topics = [(self.start_button_topic, 1), (self.sensor_state_topic("charger_state"), 1)]
+        topics = [(self.start_button_topic, 1)]
         topics.extend((self.control_command_topic(key), 1) for key in CONTROL_DEFINITIONS)
         for topic, qos in topics:
             client.subscribe(topic, qos=qos)
@@ -233,6 +229,8 @@ class MQTTOutputPublisher:
             payload.update({"min": definition["min"], "max": definition["max"], "step": definition["step"]})
         if "unit" in definition:
             payload["unit_of_measurement"] = definition["unit"]
+        if "mode" in definition:
+            payload["mode"] = definition["mode"]
         return payload
 
     def _build_sensor_discovery(self, key: str, definition: dict[str, Any]) -> dict[str, Any]:
@@ -261,7 +259,7 @@ class MQTTOutputPublisher:
         }
 
     def _serialize_value(self, key: str, value: Any) -> str:
-        if key in {"nighttime_charging_only", "cable_connected", "schedule_authorized", "charger_state", "charger_command"}:
+        if key in {"nighttime_charging_only", "schedule_authorized"}:
             return "ON" if bool(value) else "OFF"
         if value is None:
             return ""

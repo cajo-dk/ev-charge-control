@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.1.0
+- Switched pricing and charger integration from external MQTT mirroring to selected Home Assistant entity IDs for Energi Data Service pricing, charger control, and charger state.
+- Changed `current_soc`, `target_soc`, and `charge_loss` MQTT number controls to typed input mode instead of slider mode.
+- Combined actual and forecast pricing data for extended calculation horizons up to 72 hours and added test coverage for the new integration path.
+
 ## 2.0.0
 - Replaced the Home Assistant entity-ID runtime model with MQTT-owned controls, sensors, and a Start button on the EVCC device.
 - Kept only MQTT broker and log-level settings in add-on configuration while preserving the aggregate MQTT compatibility sensor.

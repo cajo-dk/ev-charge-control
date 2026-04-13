@@ -58,10 +58,8 @@ class Snapshot:
     charge_loss = "10"
     finish_by = "06:30"
     nighttime_charging_only = False
-    cable_connected = True
     schedule_authorized = True
-    charger_state = False
-    charger_command = False
+    charger_state = "connected_requesting_charge"
     pricing_information = "{\"raw_today\":[],\"raw_tomorrow\":null,\"forecast\":null}"
 
 
@@ -91,8 +89,10 @@ def test_publisher_starts_and_publishes_discovery(monkeypatch) -> None:
     assert aggregate_payload["state_topic"] == "evcc/state"
     assert aggregate_payload["json_attributes_topic"] == "evcc/attributes"
     assert ("evcc/controls/current_soc/set", 1) in fake_client.subscriptions
-    assert ("evcc/sensors/charger_state/state", 1) in fake_client.subscriptions
     assert ("evcc/actions/start/press", 1) in fake_client.subscriptions
+    current_soc_discovery = next(item for item in fake_client.published if item[0] == "homeassistant/number/ev_charge_control_current_soc/config")
+    current_soc_payload = json.loads(current_soc_discovery[1])
+    assert current_soc_payload["mode"] == "box"
 
 
 def test_publisher_publishes_runtime_controls_and_attributes(monkeypatch) -> None:
@@ -120,10 +120,13 @@ def test_publisher_publishes_runtime_controls_and_attributes(monkeypatch) -> Non
             "charge_window_state": "Not Reached",
             "status_message": "Ready",
             "status_level": 0,
+            "charger_state": "connected_requesting_charge",
+            "pricing_information": {"raw_today": []},
         },
     )
 
     assert ("evcc/controls/current_soc/state", "20", 1, True) in fake_client.published
+    assert ("evcc/sensors/charger_state/state", "connected_requesting_charge", 1, True) in fake_client.published
     assert ("evcc/sensors/status_message/state", "Ready", 1, True) in fake_client.published
     assert ("evcc/state", "OK", 1, True) in fake_client.published
     attributes_publish = next(item for item in fake_client.published if item[0] == "evcc/attributes")
@@ -156,8 +159,5 @@ def test_publisher_routes_control_and_button_messages(monkeypatch) -> None:
 
     fake_client.on_message(fake_client, None, Message("evcc/controls/current_soc/set", "42"))
     fake_client.on_message(fake_client, None, Message("evcc/actions/start/press", "PRESS"))
-    fake_client.on_message(fake_client, None, Message("evcc/sensors/charger_state/state", "ON"))
-
     assert ("control", "current_soc", "42") in received
     assert ("button", "start", "PRESS") in received
-    assert ("sensor", "charger_state", "ON") in received

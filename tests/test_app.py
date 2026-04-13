@@ -10,8 +10,8 @@ from evcc.app import (
     MqttStateStore,
     RuntimeMemory,
     build_output_payload,
+    create_home_assistant_client,
     derive_status_details,
-    load_execution_state,
     load_live_inputs_from_snapshot,
     load_options,
     next_scheduled_run,
@@ -21,33 +21,31 @@ from evcc.app import (
 from evcc.ha_api import HomeAssistantApiError
 
 
-PRICING_JSON = json.dumps(
-    {
-        "raw_today": [
-            {"hour": "2026-03-14T00:15:00+01:00", "price": 1.2},
-            {"hour": "2026-03-14T00:30:00+01:00", "price": 1.1},
-            {"hour": "2026-03-14T00:45:00+01:00", "price": 1.0},
-            {"hour": "2026-03-14T01:00:00+01:00", "price": 0.9},
-            {"hour": "2026-03-14T01:15:00+01:00", "price": 0.8},
-            {"hour": "2026-03-14T01:30:00+01:00", "price": 0.7},
-            {"hour": "2026-03-14T01:45:00+01:00", "price": 0.6},
-            {"hour": "2026-03-14T02:00:00+01:00", "price": 0.5},
-            {"hour": "2026-03-14T02:15:00+01:00", "price": 0.4},
-            {"hour": "2026-03-14T02:30:00+01:00", "price": 0.3},
-            {"hour": "2026-03-14T02:45:00+01:00", "price": 0.2},
-            {"hour": "2026-03-14T03:00:00+01:00", "price": 0.2},
-            {"hour": "2026-03-14T03:15:00+01:00", "price": 0.2},
-            {"hour": "2026-03-14T03:30:00+01:00", "price": 0.2},
-            {"hour": "2026-03-14T03:45:00+01:00", "price": 0.2},
-            {"hour": "2026-03-14T04:00:00+01:00", "price": 0.2},
-            {"hour": "2026-03-14T04:15:00+01:00", "price": 0.2},
-            {"hour": "2026-03-14T04:30:00+01:00", "price": 0.2},
-            {"hour": "2026-03-14T04:45:00+01:00", "price": 0.2},
-        ],
-        "raw_tomorrow": None,
-        "forecast": [{"hour": "2026-03-15T00:00:00+01:00", "price": 1.1}],
-    }
-)
+PRICING_ATTRIBUTES = {
+    "raw_today": [
+        {"hour": "2026-03-14T00:15:00+01:00", "price": 1.2},
+        {"hour": "2026-03-14T00:30:00+01:00", "price": 1.1},
+        {"hour": "2026-03-14T00:45:00+01:00", "price": 1.0},
+        {"hour": "2026-03-14T01:00:00+01:00", "price": 0.9},
+        {"hour": "2026-03-14T01:15:00+01:00", "price": 0.8},
+        {"hour": "2026-03-14T01:30:00+01:00", "price": 0.7},
+        {"hour": "2026-03-14T01:45:00+01:00", "price": 0.6},
+        {"hour": "2026-03-14T02:00:00+01:00", "price": 0.5},
+        {"hour": "2026-03-14T02:15:00+01:00", "price": 0.4},
+        {"hour": "2026-03-14T02:30:00+01:00", "price": 0.3},
+        {"hour": "2026-03-14T02:45:00+01:00", "price": 0.2},
+        {"hour": "2026-03-14T03:00:00+01:00", "price": 0.2},
+        {"hour": "2026-03-14T03:15:00+01:00", "price": 0.2},
+        {"hour": "2026-03-14T03:30:00+01:00", "price": 0.2},
+        {"hour": "2026-03-14T03:45:00+01:00", "price": 0.2},
+        {"hour": "2026-03-14T04:00:00+01:00", "price": 0.2},
+        {"hour": "2026-03-14T04:15:00+01:00", "price": 0.2},
+        {"hour": "2026-03-14T04:30:00+01:00", "price": 0.2},
+        {"hour": "2026-03-14T04:45:00+01:00", "price": 0.2},
+    ],
+    "raw_tomorrow": None,
+    "forecast": [{"hour": "2026-03-15T00:00:00+01:00", "price": 1.1}],
+}
 
 
 class DummyPublisher:
@@ -62,6 +60,43 @@ class DummyPublisher:
         self.runtime_payloads.append(payload)
 
 
+class DummyClient:
+    def __init__(self) -> None:
+        self.actions: list[tuple[str, str]] = []
+        self.charger_state = "connected_requesting_charge"
+        self.pricing_attributes = PRICING_ATTRIBUTES
+
+    def get_state(self, entity_id: str) -> dict:
+        if entity_id == "sensor.energi_data_service":
+            return {"state": "ok", "attributes": self.pricing_attributes}
+        if entity_id == "sensor.ev_charger_state":
+            return {"state": self.charger_state, "attributes": {}}
+        raise AssertionError(f"Unexpected entity state request: {entity_id}")
+
+    def get_entity_value(self, entity_id: str) -> str:
+        if entity_id == "sensor.ev_charger_state":
+            return self.charger_state
+        raise AssertionError(f"Unexpected entity value request: {entity_id}")
+
+    def turn_on_switch(self, entity_id: str) -> None:
+        self.actions.append(("turn_on_switch", entity_id))
+
+    def turn_off_switch(self, entity_id: str) -> None:
+        self.actions.append(("turn_off_switch", entity_id))
+
+
+def build_config(**overrides: str | int) -> AppConfig:
+    mapping: dict[str, str | int] = {
+        "mqtt_host": "mqtt.local",
+        "mqtt_port": 1883,
+        "pricing_information_entity": "sensor.energi_data_service",
+        "charger_control_switch_entity": "switch.ev_charger_control",
+        "charger_state_sensor_entity": "sensor.ev_charger_state",
+    }
+    mapping.update(overrides)
+    return AppConfig.from_mapping(mapping)
+
+
 def seed_store(**overrides: str | bool) -> MqttStateStore:
     store = MqttStateStore()
     values: dict[str, str | bool] = {
@@ -72,11 +107,7 @@ def seed_store(**overrides: str | bool) -> MqttStateStore:
         "charge_loss": "10",
         "finish_by": "06:30",
         "nighttime_charging_only": False,
-        "cable_connected": True,
         "schedule_authorized": False,
-        "charger_state": False,
-        "charger_command": False,
-        "pricing_information": PRICING_JSON,
     }
     values.update(overrides)
     for key, value in values.items():
@@ -98,9 +129,19 @@ def test_load_options_returns_empty_mapping_for_missing_file(tmp_path: Path) -> 
     assert load_options(missing_path) == {}
 
 
-def test_validate_config_reports_only_missing_mqtt_host() -> None:
+def test_validate_config_reports_required_fields() -> None:
     missing_fields = validate_config(AppConfig())
-    assert missing_fields == ["mqtt_host"]
+    assert missing_fields == [
+        "mqtt_host",
+        "pricing_information_entity",
+        "charger_control_switch_entity",
+        "charger_state_sensor_entity",
+    ]
+
+
+def test_create_home_assistant_client_returns_none_without_token(monkeypatch) -> None:
+    monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    assert create_home_assistant_client() is None
 
 
 def test_next_scheduled_run_uses_requested_minutes() -> None:
@@ -115,18 +156,23 @@ def test_store_rejects_invalid_percentage_payload() -> None:
 
 
 def test_load_live_inputs_from_snapshot_parses_pricing_json() -> None:
-    snapshot = seed_store().snapshot()
+    store = seed_store()
+    store.set_internal_value("pricing_information", json.dumps(PRICING_ATTRIBUTES))
+    snapshot = store.snapshot()
     live_inputs = load_live_inputs_from_snapshot(snapshot)
     assert live_inputs.ev_current_soc == "20"
     assert live_inputs.pricing_information.raw_today
 
 
-def test_process_runtime_tick_publishes_waiting_status() -> None:
+def test_process_runtime_tick_syncs_home_assistant_pricing_and_waiting_status() -> None:
     store = seed_store(schedule_authorized=True)
     publisher = DummyPublisher()
+    client = DummyClient()
     memory = RuntimeMemory()
 
     result = process_runtime_tick(
+        client=client,
+        config=build_config(),
         store=store,
         publisher=publisher,
         logger=logging.getLogger("test"),
@@ -141,12 +187,14 @@ def test_process_runtime_tick_publishes_waiting_status() -> None:
     assert payload["end"] == "05:00"
     assert payload["status_message"] == "Charge session planned - expected start in 00:14"
     assert payload["status_level"] == 10
-    assert publisher.runtime_payloads
+    assert payload["pricing_information"]["raw_today"]
 
 
-def test_process_runtime_tick_publishes_active_status() -> None:
-    store = seed_store(schedule_authorized=False, charger_state=True, charger_command=True)
+def test_process_runtime_tick_publishes_active_status_from_charger_sensor() -> None:
+    store = seed_store(schedule_authorized=False)
     publisher = DummyPublisher()
+    client = DummyClient()
+    client.charger_state = "charging"
     memory = RuntimeMemory(
         last_calculation_time=datetime.fromisoformat("2026-03-14T00:01:00+01:00"),
         published_payload={
@@ -157,9 +205,12 @@ def test_process_runtime_tick_publishes_active_status() -> None:
             "lock_calculation": True,
         },
         soc_at_charge_start=20.0,
+        charger_command=True,
     )
 
     result = process_runtime_tick(
+        client=client,
+        config=build_config(),
         store=store,
         publisher=publisher,
         logger=logging.getLogger("test"),
@@ -170,11 +221,14 @@ def test_process_runtime_tick_publishes_active_status() -> None:
 
     assert result.published_payload["status_message"] == "Charge session active - expected finish in 03:00"
     assert result.published_payload["status_level"] == 20
+    assert result.published_payload["charger_state"] == "charging"
 
 
 def test_process_runtime_tick_latches_completion_status() -> None:
-    store = seed_store(current_soc="80", target_soc="80", charger_state=False, charger_command=False)
+    store = seed_store(current_soc="80", target_soc="80", schedule_authorized=False)
     publisher = DummyPublisher()
+    client = DummyClient()
+    client.charger_state = "connected_finished_idle"
     memory = RuntimeMemory(
         published_payload={
             "start": "00:15",
@@ -188,6 +242,8 @@ def test_process_runtime_tick_latches_completion_status() -> None:
     )
 
     result = process_runtime_tick(
+        client=client,
+        config=build_config(),
         store=store,
         publisher=publisher,
         logger=logging.getLogger("test"),
@@ -201,8 +257,9 @@ def test_process_runtime_tick_latches_completion_status() -> None:
 
 
 def test_process_runtime_tick_publishes_disabled_message() -> None:
-    store = seed_store(schedule_authorized=False, charger_state=False)
+    store = seed_store(schedule_authorized=False)
     publisher = DummyPublisher()
+    client = DummyClient()
     memory = RuntimeMemory(
         published_payload={
             "start": "00:15",
@@ -213,6 +270,8 @@ def test_process_runtime_tick_publishes_disabled_message() -> None:
     )
 
     result = process_runtime_tick(
+        client=client,
+        config=build_config(),
         store=store,
         publisher=publisher,
         logger=logging.getLogger("test"),
@@ -225,14 +284,18 @@ def test_process_runtime_tick_publishes_disabled_message() -> None:
     assert result.published_payload["status_level"] == 50
 
 
-def test_process_runtime_tick_publishes_ready_when_unplugged() -> None:
-    store = seed_store(cable_connected=False)
+def test_process_runtime_tick_publishes_ready_when_disconnected() -> None:
+    store = seed_store()
     publisher = DummyPublisher()
+    client = DummyClient()
+    client.charger_state = "disconnected"
     memory = RuntimeMemory(
         published_payload={"start": "--:--", "end": "--:--", "timestamp": "2026-03-14T00:01:00+01:00", "status": "ok"}
     )
 
     result = process_runtime_tick(
+        client=client,
+        config=build_config(),
         store=store,
         publisher=publisher,
         logger=logging.getLogger("test"),
@@ -245,29 +308,59 @@ def test_process_runtime_tick_publishes_ready_when_unplugged() -> None:
     assert result.published_payload["status_level"] == 0
 
 
-def test_process_runtime_tick_prioritizes_errors() -> None:
+def test_process_runtime_tick_raises_for_unsupported_charger_state() -> None:
     store = seed_store()
-    store.set_internal_value("pricing_information", "{bad json")
     publisher = DummyPublisher()
-    memory = RuntimeMemory()
+    client = DummyClient()
+    client.charger_state = "mystery"
+
+    with pytest.raises(HomeAssistantApiError, match="Unsupported charger state"):
+        process_runtime_tick(
+            client=client,
+            config=build_config(),
+            store=store,
+            publisher=publisher,
+            logger=logging.getLogger("test"),
+            now=datetime.fromisoformat("2026-03-14T00:01:00+01:00"),
+            memory=RuntimeMemory(),
+            force_recalculate=True,
+        )
+
+
+def test_process_runtime_tick_turns_on_selected_charger_switch() -> None:
+    store = seed_store(schedule_authorized=True)
+    publisher = DummyPublisher()
+    client = DummyClient()
+    memory = RuntimeMemory(
+        published_payload={
+            "start": "00:15",
+            "end": "05:00",
+            "timestamp": "2026-03-14T00:01:00+01:00",
+            "status": "ok",
+            "lock_calculation": False,
+        }
+    )
 
     result = process_runtime_tick(
+        client=client,
+        config=build_config(),
         store=store,
         publisher=publisher,
         logger=logging.getLogger("test"),
-        now=datetime.fromisoformat("2026-03-14T00:01:00+01:00"),
+        now=datetime.fromisoformat("2026-03-14T00:20:00+01:00"),
         memory=memory,
-        force_recalculate=True,
+        force_recalculate=False,
     )
 
-    assert result.published_payload["status_level"] == 100
-    assert "Could not parse pricing_information JSON" in result.published_payload["status_message"]
+    assert ("turn_on_switch", "switch.ev_charger_control") in client.actions
+    assert result.charger_command is True
 
 
-def test_start_button_enables_authorization_and_starts_in_window() -> None:
-    store = seed_store(schedule_authorized=False, charger_state=False, charger_command=False)
+def test_start_button_enables_authorization_and_starts_selected_switch_in_window() -> None:
+    store = seed_store(schedule_authorized=False)
     store.press_start()
     publisher = DummyPublisher()
+    client = DummyClient()
     memory = RuntimeMemory(
         published_payload={
             "start": "00:15",
@@ -278,6 +371,8 @@ def test_start_button_enables_authorization_and_starts_in_window() -> None:
     )
 
     result = process_runtime_tick(
+        client=client,
+        config=build_config(),
         store=store,
         publisher=publisher,
         logger=logging.getLogger("test"),
@@ -287,11 +382,11 @@ def test_start_button_enables_authorization_and_starts_in_window() -> None:
     )
 
     assert ("schedule_authorized", True) in publisher.control_states
-    assert ("charger_command", True) in publisher.control_states
-    assert result.published_payload["charger_command"] is True
+    assert ("turn_on_switch", "switch.ev_charger_control") in client.actions
+    assert result.charger_command is True
 
 
-def test_build_output_payload_includes_status_fields() -> None:
+def test_build_output_payload_includes_status_and_pricing_fields() -> None:
     payload = build_output_payload(
         {"status": "ok", "start": "00:15", "end": "05:00"},
         finish_by=datetime.fromisoformat("2026-03-14T06:30:00+01:00"),
@@ -305,14 +400,22 @@ def test_build_output_payload_includes_status_fields() -> None:
         charge_window_state="Not Reached",
         status_message="Ready",
         status_level=0,
+        charger_state="connected_requesting_charge",
+        pricing_information={"raw_today": []},
     )
     assert payload["status_message"] == "Ready"
     assert payload["status_level"] == 0
     assert payload["charger_command"] is False
+    assert payload["charger_state"] == "connected_requesting_charge"
+    assert payload["pricing_information"] == {"raw_today": []}
 
 
 def test_derive_status_details_keeps_error_precedence() -> None:
-    state = load_execution_state(seed_store().snapshot(), now=datetime.fromisoformat("2026-03-14T00:01:00+01:00"))
+    from evcc.app import load_execution_state
+
+    store = seed_store()
+    store.set_internal_value("charger_state", "connected_requesting_charge")
+    state = load_execution_state(store.snapshot(), now=datetime.fromisoformat("2026-03-14T00:01:00+01:00"))
     details = derive_status_details(
         state=state,
         published_payload={"status": "boom"},

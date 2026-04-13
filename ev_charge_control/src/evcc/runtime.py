@@ -265,10 +265,10 @@ def _normalize_pricing(pricing: PricingPayload, now: datetime) -> list[PricePoin
     entries: list[tuple[dict[str, Any], str]] = [
         (entry, "raw_today") for entry in pricing.raw_today
     ]
+    if pricing.forecast is not None:
+        entries.extend((entry, "forecast") for entry in pricing.forecast)
     if pricing.raw_tomorrow is not None:
         entries.extend((entry, "raw_tomorrow") for entry in pricing.raw_tomorrow)
-    elif pricing.forecast is not None:
-        entries.extend((entry, "forecast") for entry in pricing.forecast)
 
     points_by_time: dict[datetime, float] = {}
     for entry, source in entries:

@@ -251,3 +251,47 @@ def test_calculate_result_uses_hourly_forecast_for_nighttime_windows() -> None:
     assert payload["status"] == "ok"
     assert payload["start"] == "01:45"
     assert payload["end"] == "06:00"
+
+
+def test_calculate_result_uses_actual_and_forecast_pricing_across_extended_horizon() -> None:
+    live_inputs = LiveInputs(
+        ev_current_soc="20",
+        target_soc="100",
+        ev_battery_capacity="75",
+        charger_speed="11",
+        charge_loss="0",
+        finish_by="2026-03-16T08:00:00+01:00",
+        nighttime_charging_only=False,
+        pricing_information=PricingPayload(
+            raw_today=[
+                {"hour": "2026-03-14T08:15:00+01:00", "price": 5.0},
+                {"hour": "2026-03-14T08:30:00+01:00", "price": 5.0},
+                {"hour": "2026-03-14T08:45:00+01:00", "price": 5.0},
+                {"hour": "2026-03-14T09:00:00+01:00", "price": 5.0},
+            ],
+            raw_tomorrow=[
+                {"hour": "2026-03-15T20:00:00+01:00", "price": 4.0},
+                {"hour": "2026-03-15T20:15:00+01:00", "price": 4.0},
+                {"hour": "2026-03-15T20:30:00+01:00", "price": 4.0},
+                {"hour": "2026-03-15T20:45:00+01:00", "price": 4.0},
+            ],
+            forecast=[
+                {"hour": "2026-03-16T00:00:00+01:00", "price": 3.0},
+                {"hour": "2026-03-16T01:00:00+01:00", "price": 2.0},
+                {"hour": "2026-03-16T02:00:00+01:00", "price": 1.0},
+                {"hour": "2026-03-16T03:00:00+01:00", "price": 1.0},
+                {"hour": "2026-03-16T04:00:00+01:00", "price": 1.0},
+                {"hour": "2026-03-16T05:00:00+01:00", "price": 1.0},
+                {"hour": "2026-03-16T06:00:00+01:00", "price": 1.0},
+                {"hour": "2026-03-16T07:00:00+01:00", "price": 1.0},
+            ],
+        ),
+    )
+
+    payload = calculate_result(
+        live_inputs,
+        now=datetime.fromisoformat("2026-03-14T08:01:00+01:00"),
+    )
+
+    assert payload["status"] == "ok"
+    assert payload["start"] == "02:00"

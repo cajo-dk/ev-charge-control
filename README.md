@@ -2,7 +2,7 @@
 
 EV Charge Control (`EVCC`) is a Home Assistant add-on that calculates the best time to charge an electric vehicle based on electricity prices, charging constraints, and a user-defined completion time.
 
-Release `2.x.x` moves EVCC to an MQTT-owned runtime model. The add-on keeps only broker connectivity and logging in add-on options. All charge inputs, controls, and status outputs are exposed through MQTT discovery entities on the EVCC device.
+Release `2.1.x` keeps EVCC's main runtime inputs on the MQTT device while integrating pricing and charger state/control directly with selected Home Assistant entities.
 
 ## Core Behavior
 
@@ -15,13 +15,13 @@ EVCC calculates an optimal charging start time so that:
 The add-on publishes:
 
 - a compatibility MQTT sensor with `status` as state and the remaining EVCC payload as attributes;
-- MQTT discovery controls for runtime inputs such as SoC, target SoC, charger speed, finish-by, cable state, and pricing payloads;
+- MQTT discovery controls for runtime inputs such as SoC, target SoC, charger speed, finish-by, and scheduling flags;
 - MQTT discovery sensors for calculated times, state-machine status, and human-readable operator status; and
 - an MQTT discovery `Start` button for re-authorizing and triggering a charge session when appropriate.
 
 ## Add-on Configuration
 
-Only these add-on options remain:
+The add-on requires these options:
 
 - `mqtt_host`
 - `mqtt_port`
@@ -30,18 +30,34 @@ Only these add-on options remain:
 - `mqtt_discovery_prefix`
 - `mqtt_topic_prefix`
 - `log_level`
+- `pricing_information_entity`
+- `charger_control_switch_entity`
+- `charger_state_sensor_entity`
 
 ## Home Assistant Integration Model
 
-Home Assistant automations or integrations are responsible for feeding real-world values into EVCC's writable MQTT controls and for reacting to EVCC's charger command output.
+Home Assistant automations or integrations are still responsible for feeding EVCC's writable MQTT controls for the following values:
 
-Typical responsibilities outside EVCC:
+- `current_soc`
+- `target_soc`
+- `battery_capacity`
+- `charger_speed`
+- `charge_loss`
+- `finish_by`
+- `nighttime_charging_only`
+- `schedule_authorized`
 
-- write `current_soc`, `target_soc`, `battery_capacity`, `charger_speed`, `charge_loss`, `finish_by`, and `pricing_information`;
-- mirror the physical cable and charger state into `cable_connected` and `charger_state`;
-- react to EVCC's `charger_command` switch state and forward it to the real charger integration.
+Pricing and charger integration are now selected directly in add-on configuration:
 
-`charger_state` is intentionally exposed as a read-only MQTT sensor in Home Assistant while still being consumed by EVCC from its MQTT state topic.
+- `pricing_information_entity` should point at an Energi Data Service sensor whose attributes provide `raw_today`, `raw_tomorrow`, and optional `forecast` data.
+- `charger_control_switch_entity` should point at the real charger switch EVCC is allowed to turn on and off.
+- `charger_state_sensor_entity` should point at a Home Assistant sensor that reports one of:
+  - `charging`
+  - `disconnected`
+  - `connected_finished_idle`
+  - `connected_requesting_charge`
+
+The aggregate EVCC MQTT payload still includes pricing data as an attribute for downstream consumers.
 
 ## Local Setup
 
@@ -84,4 +100,4 @@ python -m pytest -q
 
 ## Status
 
-This repository contains the Release `2.x.x` MQTT-owned runtime implementation. Product and workflow governance remain defined by `CONTEXT.md` and `VERSIONING.md`.
+This repository contains the Release `2.1.x` hybrid runtime implementation. Product and workflow governance remain defined by `CONTEXT.md` and `VERSIONING.md`.
