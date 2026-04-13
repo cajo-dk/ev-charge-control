@@ -775,7 +775,7 @@ def derive_status_details(
     completion_time: str | None,
 ) -> StatusDetails:
     status = str(published_payload.get("status", "ok"))
-    if status != "ok":
+    if status != "ok" and status != "No schedule calculated.":
         return StatusDetails(status, 100, completion_time)
 
     start = str(published_payload.get("start", "")).strip()
@@ -783,8 +783,7 @@ def derive_status_details(
     timestamp = str(published_payload.get("timestamp", "")).strip()
     if state.charger_enabled and start and end and timestamp and end != NO_SCHEDULE_TIME:
         end_at = resolve_schedule_end(start=start, end=end, timestamp=timestamp, now=now)
-        remaining = _format_countdown(max(end_at - now, timedelta()))
-        return StatusDetails(f"Charge session active - expected finish in {remaining}", 20, None)
+        return StatusDetails(f"Charge session active - expected finish at {end_at.strftime('%H:%M')}", 20, None)
 
     charge_window = derive_charge_window(published_payload, now=now)
     if (

@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.1
+- Changed the active charging status text to show the expected finish clock time instead of a countdown.
+- Prevented the internal no-schedule placeholder from surfacing as status level `100` during normal resting states.
+
 ## 2.1.0
 - Switched pricing and charger integration from external MQTT mirroring to selected Home Assistant entity IDs for Energi Data Service pricing, charger control, and charger state.
 - Changed `current_soc`, `target_soc`, and `charge_loss` MQTT number controls to typed input mode instead of slider mode.

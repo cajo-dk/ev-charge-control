@@ -219,7 +219,7 @@ def test_process_runtime_tick_publishes_active_status_from_charger_sensor() -> N
         force_recalculate=False,
     )
 
-    assert result.published_payload["status_message"] == "Charge session active - expected finish in 03:00"
+    assert result.published_payload["status_message"] == "Charge session active - expected finish at 05:00"
     assert result.published_payload["status_level"] == 20
     assert result.published_payload["charger_state"] == "charging"
 
@@ -301,6 +301,27 @@ def test_process_runtime_tick_publishes_ready_when_disconnected() -> None:
         logger=logging.getLogger("test"),
         now=datetime.fromisoformat("2026-03-14T00:05:00+01:00"),
         memory=memory,
+        force_recalculate=False,
+    )
+
+    assert result.published_payload["status_message"] == "Ready"
+    assert result.published_payload["status_level"] == 0
+
+
+def test_process_runtime_tick_resting_without_schedule_does_not_report_system_failure() -> None:
+    store = seed_store()
+    publisher = DummyPublisher()
+    client = DummyClient()
+    client.charger_state = "disconnected"
+
+    result = process_runtime_tick(
+        client=client,
+        config=build_config(),
+        store=store,
+        publisher=publisher,
+        logger=logging.getLogger("test"),
+        now=datetime.fromisoformat("2026-03-14T00:05:00+01:00"),
+        memory=RuntimeMemory(),
         force_recalculate=False,
     )
 
