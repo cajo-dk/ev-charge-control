@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.5
+- Restored still-missing EVCC startup controls from Home Assistant’s own EVCC entity states when MQTT retained replay and local runtime-state restore are incomplete.
+- Added a final startup fallback for EVCC-owned control values such as `target_soc`, `battery_capacity`, `charger_speed`, and `finish_by`.
+
 ## 2.1.4
 - Persisted EVCC-owned control values locally so required startup inputs such as `current_soc`, `target_soc`, and `finish_by` survive restarts even when MQTT retained replay is incomplete.
 - Restored persisted control values from `/data/runtime_state.json` before MQTT synchronization while keeping later MQTT updates authoritative.
