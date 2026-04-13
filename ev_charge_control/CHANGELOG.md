@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.2
+- Restored retained MQTT control values from control state topics so EVCC no longer loses inputs such as `target_soc` after restart or reconnect.
+- Prevented blank control-state republishes from overwriting retained MQTT control values during startup.
+
 ## 2.1.1
 - Changed the active charging status text to show the expected finish clock time instead of a countdown.
 - Prevented the internal no-schedule placeholder from surfacing as status level `100` during normal resting states.

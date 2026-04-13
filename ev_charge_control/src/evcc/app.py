@@ -163,7 +163,7 @@ class MqttStateStore:
         if message_type == "button" and key == "start":
             self.press_start()
             return
-        if message_type == "control":
+        if message_type in {"control", "control_state"}:
             self.update_value(key, payload)
 
     def press_start(self) -> None:

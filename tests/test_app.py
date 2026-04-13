@@ -155,6 +155,12 @@ def test_store_rejects_invalid_percentage_payload() -> None:
         store.update_value("current_soc", "101")
 
 
+def test_store_accepts_retained_control_state_message() -> None:
+    store = MqttStateStore()
+    store.handle_message("control_state", "target_soc", "90")
+    assert store.snapshot().target_soc == "90"
+
+
 def test_load_live_inputs_from_snapshot_parses_pricing_json() -> None:
     store = seed_store()
     store.set_internal_value("pricing_information", json.dumps(PRICING_ATTRIBUTES))

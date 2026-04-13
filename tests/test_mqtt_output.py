@@ -89,6 +89,7 @@ def test_publisher_starts_and_publishes_discovery(monkeypatch) -> None:
     assert aggregate_payload["state_topic"] == "evcc/state"
     assert aggregate_payload["json_attributes_topic"] == "evcc/attributes"
     assert ("evcc/controls/current_soc/set", 1) in fake_client.subscriptions
+    assert ("evcc/controls/current_soc/state", 1) in fake_client.subscriptions
     assert ("evcc/actions/start/press", 1) in fake_client.subscriptions
     current_soc_discovery = next(item for item in fake_client.published if item[0] == "homeassistant/number/ev_charge_control_current_soc/config")
     current_soc_payload = json.loads(current_soc_discovery[1])
@@ -158,6 +159,27 @@ def test_publisher_routes_control_and_button_messages(monkeypatch) -> None:
             self.payload = payload.encode("utf-8")
 
     fake_client.on_message(fake_client, None, Message("evcc/controls/current_soc/set", "42"))
+    fake_client.on_message(fake_client, None, Message("evcc/controls/target_soc/state", "90"))
     fake_client.on_message(fake_client, None, Message("evcc/actions/start/press", "PRESS"))
     assert ("control", "current_soc", "42") in received
+    assert ("control_state", "target_soc", "90") in received
     assert ("button", "start", "PRESS") in received
+
+
+def test_publisher_skips_blank_control_state_publish(monkeypatch) -> None:
+    fake_client = FakeMqttClient()
+    monkeypatch.setattr("evcc.mqtt_output.mqtt.Client", lambda *args, **kwargs: fake_client)
+
+    publisher = MQTTOutputPublisher(
+        host="mqtt.local",
+        port=1883,
+        username=None,
+        password=None,
+        discovery_prefix="homeassistant",
+        topic_prefix="evcc",
+        logger=logging.getLogger("test"),
+    )
+    publisher.start()
+    publisher.publish_control_state("target_soc", "")
+
+    assert not any(topic == "evcc/controls/target_soc/state" for topic, *_ in fake_client.published)

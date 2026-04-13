@@ -79,6 +79,8 @@ class MQTTOutputPublisher:
     def publish_control_state(self, key: str, value: Any) -> None:
         if key not in CONTROL_DEFINITIONS:
             raise ValueError(f"Unknown control '{key}'")
+        if value in {None, ""}:
+            return
         self._publish(self.control_state_topic(key), self._serialize_value(key, value), retain=True)
 
     def publish_runtime_state(self, *, snapshot: Any, payload: dict[str, Any]) -> None:
@@ -156,6 +158,9 @@ class MQTTOutputPublisher:
                 if topic == self.control_command_topic(key):
                     self._message_handler("control", key, payload)
                     return
+                if topic == self.control_state_topic(key):
+                    self._message_handler("control_state", key, payload)
+                    return
         except Exception as exc:
             self.logger.warning("Failed to process MQTT message on '%s': %s", topic, exc)
 
@@ -208,6 +213,7 @@ class MQTTOutputPublisher:
     def _subscribe_runtime_topics(self, client: mqtt.Client) -> None:
         topics = [(self.start_button_topic, 1)]
         topics.extend((self.control_command_topic(key), 1) for key in CONTROL_DEFINITIONS)
+        topics.extend((self.control_state_topic(key), 1) for key in CONTROL_DEFINITIONS)
         for topic, qos in topics:
             client.subscribe(topic, qos=qos)
 
