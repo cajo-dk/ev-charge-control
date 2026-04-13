@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from evcc.ha_api import HomeAssistantApiError, HomeAssistantClient
-from evcc.mqtt_output import MQTTOutputPublisher
+from evcc.mqtt_output import CONTROL_DEFINITIONS, MQTTOutputPublisher
 from evcc.runtime import (
     NO_SCHEDULE_TIME,
     LiveInputs,
@@ -396,6 +396,51 @@ def _missing_startup_control_values(snapshot: RuntimeSnapshot) -> list[str]:
     ]
 
 
+def restore_missing_controls_from_home_assistant(
+    *,
+    client: HomeAssistantClient,
+    store: MqttStateStore,
+    logger: logging.Logger,
+) -> list[str]:
+    missing = _missing_startup_control_values(store.snapshot())
+    if not missing:
+        return []
+
+    restored: list[str] = []
+    for key in missing:
+        entity_id = _control_entity_id(key)
+        try:
+            raw_value = client.get_entity_value(entity_id)
+        except HomeAssistantApiError as exc:
+            logger.debug("Could not restore '%s' from Home Assistant entity '%s': %s", key, entity_id, exc)
+            continue
+        if raw_value in {None, "", "unknown", "unavailable"}:
+            continue
+        try:
+            if store.update_value(key, str(raw_value)):
+                restored.append(key)
+        except HomeAssistantApiError as exc:
+            logger.debug(
+                "Ignored Home Assistant fallback value for '%s' from '%s': %s",
+                key,
+                entity_id,
+                exc,
+            )
+
+    remaining = _missing_startup_control_values(store.snapshot())
+    if restored:
+        logger.info(
+            "Restored EVCC control values from Home Assistant state: %s",
+            ", ".join(restored),
+        )
+    return remaining
+
+
+def _control_entity_id(key: str) -> str:
+    component = str(CONTROL_DEFINITIONS[key]["component"])
+    return f"{component}.ev_charge_control_{key}"
+
+
 def load_execution_state(snapshot: RuntimeSnapshot, *, now: datetime) -> ExecutionState:
     return ExecutionState(
         cable=_charger_state_to_cable(snapshot.charger_state),
@@ -769,6 +814,16 @@ def run_scheduler(
         store=store,
         logger=logger,
     )
+    remaining_controls = restore_missing_controls_from_home_assistant(
+        client=client,
+        store=store,
+        logger=logger,
+    )
+    if remaining_controls:
+        logger.info(
+            "Startup control restore still missing values after Home Assistant fallback: %s",
+            ", ".join(remaining_controls),
+        )
     memory = RuntimeMemory()
 
     startup_time = datetime.now().astimezone().replace(second=0, microsecond=0)

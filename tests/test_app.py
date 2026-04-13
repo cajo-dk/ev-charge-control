@@ -17,6 +17,7 @@ from evcc.app import (
     load_options,
     next_scheduled_run,
     process_runtime_tick,
+    restore_missing_controls_from_home_assistant,
     validate_config,
     wait_for_initial_mqtt_restore,
 )
@@ -70,17 +71,31 @@ class DummyClient:
         self.actions: list[tuple[str, str]] = []
         self.charger_state = "connected_requesting_charge"
         self.pricing_attributes = PRICING_ATTRIBUTES
+        self.entity_values: dict[str, str] = {
+            "number.ev_charge_control_current_soc": "80",
+            "number.ev_charge_control_target_soc": "90",
+            "number.ev_charge_control_battery_capacity": "71.4",
+            "number.ev_charge_control_charger_speed": "11",
+            "number.ev_charge_control_charge_loss": "10",
+            "text.ev_charge_control_finish_by": "06:30",
+            "switch.ev_charge_control_nighttime_charging_only": "off",
+            "switch.ev_charge_control_schedule_authorized": "off",
+        }
 
     def get_state(self, entity_id: str) -> dict:
         if entity_id == "sensor.energi_data_service":
             return {"state": "ok", "attributes": self.pricing_attributes}
         if entity_id == "sensor.ev_charger_state":
             return {"state": self.charger_state, "attributes": {}}
+        if entity_id in self.entity_values:
+            return {"state": self.entity_values[entity_id], "attributes": {}}
         raise AssertionError(f"Unexpected entity state request: {entity_id}")
 
     def get_entity_value(self, entity_id: str) -> str:
         if entity_id == "sensor.ev_charger_state":
             return self.charger_state
+        if entity_id in self.entity_values:
+            return self.entity_values[entity_id]
         raise AssertionError(f"Unexpected entity value request: {entity_id}")
 
     def turn_on_switch(self, entity_id: str) -> None:
@@ -238,6 +253,26 @@ def test_wait_for_initial_mqtt_restore_returns_after_timeout_when_values_missing
     snapshot = store.snapshot()
     assert snapshot.current_soc is None
     assert snapshot.finish_by is None
+
+
+def test_restore_missing_controls_from_home_assistant_uses_evcc_entities() -> None:
+    store = MqttStateStore()
+    client = DummyClient()
+
+    remaining = restore_missing_controls_from_home_assistant(
+        client=client,
+        store=store,
+        logger=logging.getLogger("test"),
+    )
+
+    snapshot = store.snapshot()
+    assert remaining == []
+    assert snapshot.current_soc == "80"
+    assert snapshot.target_soc == "90"
+    assert snapshot.battery_capacity == "71.4"
+    assert snapshot.charger_speed == "11"
+    assert snapshot.charge_loss == "10"
+    assert snapshot.finish_by == "06:30"
 
 
 def test_load_live_inputs_from_snapshot_parses_pricing_json() -> None:
