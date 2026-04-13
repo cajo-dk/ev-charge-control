@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.3
+- Delayed the first runtime calculation until MQTT connection and retained control-state replay can restore required startup inputs such as `current_soc`, `target_soc`, and `finish_by`.
+- Added bounded startup restore waiting so EVCC still proceeds normally when retained MQTT control values are genuinely unavailable.
+
 ## 2.1.2
 - Restored retained MQTT control values from control state topics so EVCC no longer loses inputs such as `target_soc` after restart or reconnect.
 - Prevented blank control-state republishes from overwriting retained MQTT control values during startup.
