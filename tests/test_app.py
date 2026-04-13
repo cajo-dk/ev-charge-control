@@ -166,6 +166,36 @@ def test_store_accepts_retained_control_state_message() -> None:
     assert store.snapshot().target_soc == "90"
 
 
+def test_store_persists_and_restores_control_values(tmp_path: Path) -> None:
+    state_path = tmp_path / "runtime_state.json"
+    store = MqttStateStore(state_path=state_path)
+    store.update_value("current_soc", "80")
+    store.update_value("target_soc", "90")
+    store.update_value("battery_capacity", "71.4")
+    store.update_value("charger_speed", "11")
+    store.update_value("charge_loss", "10")
+    store.update_value("finish_by", "06:30")
+    store.update_value("nighttime_charging_only", "OFF")
+    store.update_value("schedule_authorized", "ON")
+
+    restored = MqttStateStore(state_path=state_path).snapshot()
+    assert restored.current_soc == "80"
+    assert restored.target_soc == "90"
+    assert restored.finish_by == "06:30"
+    assert restored.schedule_authorized is True
+
+
+def test_store_does_not_persist_internal_home_assistant_state(tmp_path: Path) -> None:
+    state_path = tmp_path / "runtime_state.json"
+    store = MqttStateStore(state_path=state_path)
+    store.set_internal_value("pricing_information", json.dumps(PRICING_ATTRIBUTES))
+    store.set_internal_value("charger_state", "charging")
+
+    restored = MqttStateStore(state_path=state_path).snapshot()
+    assert restored.pricing_information == ""
+    assert restored.charger_state == "disconnected"
+
+
 def test_wait_for_initial_mqtt_restore_waits_for_retained_values() -> None:
     store = MqttStateStore()
 

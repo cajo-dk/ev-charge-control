@@ -35,6 +35,7 @@ from evcc.state_machine import (
 
 
 DEFAULT_OPTIONS_PATH = Path("/data/options.json")
+DEFAULT_RUNTIME_STATE_PATH = Path("/data/runtime_state.json")
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_MQTT_PORT = 1883
 DEFAULT_MQTT_DISCOVERY_PREFIX = "homeassistant"
@@ -50,6 +51,16 @@ STARTUP_REQUIRED_CONTROL_KEYS = (
     "charger_speed",
     "charge_loss",
     "finish_by",
+)
+PERSISTED_CONTROL_KEYS = (
+    "current_soc",
+    "target_soc",
+    "battery_capacity",
+    "charger_speed",
+    "charge_loss",
+    "finish_by",
+    "nighttime_charging_only",
+    "schedule_authorized",
 )
 
 
@@ -137,11 +148,13 @@ class StatusDetails:
 
 
 class MqttStateStore:
-    def __init__(self) -> None:
+    def __init__(self, state_path: Path | None = None) -> None:
         self._lock = threading.Lock()
         self._changed = threading.Event()
         self._version = 0
         self._snapshot = RuntimeSnapshot()
+        self._state_path = state_path
+        self._load_persisted_state()
 
     def snapshot(self) -> RuntimeSnapshot:
         with self._lock:
@@ -197,6 +210,7 @@ class MqttStateStore:
             if current == parsed:
                 return False
             setattr(self._snapshot, key, parsed)
+            self._persist_snapshot_locked()
             self._mark_changed_locked()
             return True
 
@@ -206,12 +220,41 @@ class MqttStateStore:
             if current == value:
                 return False
             setattr(self._snapshot, key, value)
+            self._persist_snapshot_locked()
             self._mark_changed_locked()
             return True
 
     def _mark_changed_locked(self) -> None:
         self._version += 1
         self._changed.set()
+
+    def _load_persisted_state(self) -> None:
+        if self._state_path is None or not self._state_path.exists():
+            return
+        try:
+            raw = json.load(self._state_path.open("r", encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logging.getLogger("evcc").warning("Failed to load persisted runtime state: %s", exc)
+            return
+        if not isinstance(raw, dict):
+            logging.getLogger("evcc").warning("Persisted runtime state was not a JSON object.")
+            return
+        for key in PERSISTED_CONTROL_KEYS:
+            if key not in raw:
+                continue
+            setattr(self._snapshot, key, raw[key])
+
+    def _persist_snapshot_locked(self) -> None:
+        if self._state_path is None:
+            return
+        payload = {key: getattr(self._snapshot, key) for key in PERSISTED_CONTROL_KEYS}
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = self._state_path.with_suffix(f"{self._state_path.suffix}.tmp")
+            tmp_path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+            tmp_path.replace(self._state_path)
+        except OSError as exc:
+            logging.getLogger("evcc").warning("Failed to persist runtime state: %s", exc)
 
 
 def configure_logging(level: str) -> None:
@@ -782,6 +825,7 @@ def run_scheduler(
 
 def main() -> int:
     options_path = Path(os.getenv("OPTIONS_PATH", DEFAULT_OPTIONS_PATH))
+    state_path = Path(os.getenv("STATE_PATH", DEFAULT_RUNTIME_STATE_PATH))
     raw_options = load_options(options_path)
     config = AppConfig.from_mapping(raw_options)
 
@@ -801,7 +845,7 @@ def main() -> int:
         logger.error("SUPERVISOR_TOKEN is not available. Home Assistant API integration is required.")
         return wait_for_shutdown()
 
-    store = MqttStateStore()
+    store = MqttStateStore(state_path=state_path)
     publisher = create_mqtt_publisher(config, logger, store)
     logger.info("EV Charge Control service is running.")
     return run_scheduler(
