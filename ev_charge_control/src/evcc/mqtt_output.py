@@ -67,6 +67,9 @@ class MQTTOutputPublisher:
         client.loop_start()
         self._client = client
 
+    def wait_until_connected(self, timeout: float) -> bool:
+        return self._connected.wait(timeout)
+
     def stop(self) -> None:
         if self._client is None:
             return

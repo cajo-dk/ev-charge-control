@@ -1,5 +1,6 @@
 import json
 import logging
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from evcc.app import (
     next_scheduled_run,
     process_runtime_tick,
     validate_config,
+    wait_for_initial_mqtt_restore,
 )
 from evcc.ha_api import HomeAssistantApiError
 
@@ -52,6 +54,9 @@ class DummyPublisher:
     def __init__(self) -> None:
         self.control_states: list[tuple[str, object]] = []
         self.runtime_payloads: list[dict] = []
+
+    def wait_until_connected(self, timeout: float) -> bool:
+        return True
 
     def publish_control_state(self, key: str, value: object) -> None:
         self.control_states.append((key, value))
@@ -159,6 +164,50 @@ def test_store_accepts_retained_control_state_message() -> None:
     store = MqttStateStore()
     store.handle_message("control_state", "target_soc", "90")
     assert store.snapshot().target_soc == "90"
+
+
+def test_wait_for_initial_mqtt_restore_waits_for_retained_values() -> None:
+    store = MqttStateStore()
+
+    def restore_values() -> None:
+        store.handle_message("control_state", "current_soc", "80")
+        store.handle_message("control_state", "target_soc", "90")
+        store.handle_message("control_state", "battery_capacity", "71.4")
+        store.handle_message("control_state", "charger_speed", "11")
+        store.handle_message("control_state", "charge_loss", "10")
+        store.handle_message("control_state", "finish_by", "06:30")
+
+    timer = threading.Timer(0.05, restore_values)
+    timer.start()
+    try:
+        wait_for_initial_mqtt_restore(
+            publisher=DummyPublisher(),
+            store=store,
+            logger=logging.getLogger("test"),
+            restore_timeout=0.5,
+        )
+    finally:
+        timer.join()
+
+    snapshot = store.snapshot()
+    assert snapshot.current_soc == "80"
+    assert snapshot.target_soc == "90"
+    assert snapshot.finish_by == "06:30"
+
+
+def test_wait_for_initial_mqtt_restore_returns_after_timeout_when_values_missing() -> None:
+    store = MqttStateStore()
+
+    wait_for_initial_mqtt_restore(
+        publisher=DummyPublisher(),
+        store=store,
+        logger=logging.getLogger("test"),
+        restore_timeout=0.01,
+    )
+
+    snapshot = store.snapshot()
+    assert snapshot.current_soc is None
+    assert snapshot.finish_by is None
 
 
 def test_load_live_inputs_from_snapshot_parses_pricing_json() -> None:

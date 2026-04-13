@@ -41,6 +41,16 @@ DEFAULT_MQTT_DISCOVERY_PREFIX = "homeassistant"
 DEFAULT_MQTT_TOPIC_PREFIX = "ev_charge_control"
 RUN_MINUTES = (1, 16, 31, 46)
 SUPPORTED_LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}
+STARTUP_CONNECT_TIMEOUT_SECONDS = 5.0
+STARTUP_RESTORE_TIMEOUT_SECONDS = 2.0
+STARTUP_REQUIRED_CONTROL_KEYS = (
+    "current_soc",
+    "target_soc",
+    "battery_capacity",
+    "charger_speed",
+    "charge_loss",
+    "finish_by",
+)
 
 
 @dataclass(slots=True)
@@ -296,6 +306,51 @@ def should_run_calculation(
         second=0,
         microsecond=0,
     )
+
+
+def wait_for_initial_mqtt_restore(
+    *,
+    publisher: MQTTOutputPublisher,
+    store: MqttStateStore,
+    logger: logging.Logger,
+    connect_timeout: float = STARTUP_CONNECT_TIMEOUT_SECONDS,
+    restore_timeout: float = STARTUP_RESTORE_TIMEOUT_SECONDS,
+) -> None:
+    if not publisher.wait_until_connected(connect_timeout):
+        logger.warning("MQTT broker connection was not confirmed before the initial calculation.")
+        return
+
+    missing = _missing_startup_control_values(store.snapshot())
+    if not missing:
+        store.clear_change_flag()
+        return
+
+    deadline = time.monotonic() + restore_timeout
+    while missing:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        changed = store.wait_for_change(remaining)
+        store.clear_change_flag()
+        if not changed:
+            break
+        missing = _missing_startup_control_values(store.snapshot())
+
+    if missing:
+        logger.info(
+            "Initial MQTT control restore was incomplete before the first calculation; missing: %s",
+            ", ".join(missing),
+        )
+    else:
+        logger.debug("Initial MQTT control restore completed before the first calculation.")
+
+
+def _missing_startup_control_values(snapshot: RuntimeSnapshot) -> list[str]:
+    return [
+        key
+        for key in STARTUP_REQUIRED_CONTROL_KEYS
+        if getattr(snapshot, key) in {None, ""}
+    ]
 
 
 def load_execution_state(snapshot: RuntimeSnapshot, *, now: datetime) -> ExecutionState:
@@ -666,6 +721,11 @@ def run_scheduler(
     signal.signal(signal.SIGINT, handle_shutdown)
 
     publisher.start()
+    wait_for_initial_mqtt_restore(
+        publisher=publisher,
+        store=store,
+        logger=logger,
+    )
     memory = RuntimeMemory()
 
     startup_time = datetime.now().astimezone().replace(second=0, microsecond=0)
