@@ -46,6 +46,8 @@ SUPPORTED_LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}
 STARTUP_CONNECT_TIMEOUT_SECONDS = 5.0
 STARTUP_RESTORE_TIMEOUT_SECONDS = 2.0
 STATE_POLL_INTERVAL_SECONDS = 1.0
+HOME_ASSISTANT_STATE_SYNC_INTERVAL_SECONDS = 30.0
+CHARGER_SWITCH_COMMAND_COOLDOWN_SECONDS = 30.0
 STARTUP_REQUIRED_CONTROL_KEYS = (
     "current_soc",
     "target_soc",
@@ -137,6 +139,9 @@ class RuntimeMemory:
     charger_command: bool = False
     last_start_stop: bool = False
     last_runtime_snapshot: RuntimeSnapshot | None = None
+    last_home_assistant_sync_time: datetime | None = None
+    last_charger_switch_command: bool | None = None
+    last_charger_switch_command_time: datetime | None = None
 
 
 @dataclass(slots=True)
@@ -149,6 +154,9 @@ class TickResult:
     charger_command: bool
     last_start_stop: bool
     last_runtime_snapshot: RuntimeSnapshot
+    last_home_assistant_sync_time: datetime | None
+    last_charger_switch_command: bool | None
+    last_charger_switch_command_time: datetime | None
 
 
 @dataclass(slots=True)
@@ -651,10 +659,13 @@ def process_runtime_tick(
 ) -> TickResult:
     previous_output_payload = memory.published_payload
     previous_snapshot = memory.last_runtime_snapshot
-    home_assistant_changed = sync_home_assistant_state(
+    home_assistant_changed, last_home_assistant_sync_time = sync_home_assistant_state(
         client=client,
         config=config,
         store=store,
+        now=now,
+        last_sync_time=memory.last_home_assistant_sync_time,
+        force=force_recalculate,
     )
     snapshot = store.snapshot()
     state = load_execution_state(snapshot, now=now)
@@ -683,7 +694,11 @@ def process_runtime_tick(
         logger=logger,
         charger_command=charger_command,
         previous_start_stop=memory.last_start_stop,
+        now=now,
+        last_switch_command=memory.last_charger_switch_command,
+        last_switch_command_time=memory.last_charger_switch_command_time,
     )
+    charger_command, last_charger_switch_command, last_charger_switch_command_time = charger_command
     snapshot = store.snapshot()
     state = load_execution_state(snapshot, now=now)
     charger_command = _end_manual_session_at_target(
@@ -694,7 +709,11 @@ def process_runtime_tick(
         state=state,
         logger=logger,
         charger_command=charger_command,
+        now=now,
+        last_switch_command=last_charger_switch_command,
+        last_switch_command_time=last_charger_switch_command_time,
     )
+    charger_command, last_charger_switch_command, last_charger_switch_command_time = charger_command
     snapshot = store.snapshot()
     state = load_execution_state(snapshot, now=now)
     charger_command = _enforce_unauthorized_idle(
@@ -703,7 +722,11 @@ def process_runtime_tick(
         state=state,
         logger=logger,
         charger_command=charger_command,
+        now=now,
+        last_switch_command=last_charger_switch_command,
+        last_switch_command_time=last_charger_switch_command_time,
     )
+    charger_command, last_charger_switch_command, last_charger_switch_command_time = charger_command
 
     previous_status = str((previous_output_payload or {}).get("status", "OK"))
     previous_lock = bool((previous_output_payload or {}).get("lock_calculation", False))
@@ -735,7 +758,11 @@ def process_runtime_tick(
             decision=decision,
             logger=logger,
             charger_command=charger_command,
+            now=now,
+            last_switch_command=last_charger_switch_command,
+            last_switch_command_time=last_charger_switch_command_time,
         )
+        charger_command, last_charger_switch_command, last_charger_switch_command_time = charger_command
 
         snapshot = store.snapshot()
         state = load_execution_state(snapshot, now=now)
@@ -776,7 +803,11 @@ def process_runtime_tick(
             decision=decision,
             logger=logger,
             charger_command=charger_command,
+            now=now,
+            last_switch_command=last_charger_switch_command,
+            last_switch_command_time=last_charger_switch_command_time,
         )
+        charger_command, last_charger_switch_command, last_charger_switch_command_time = charger_command
         snapshot = store.snapshot()
         state = load_execution_state(snapshot, now=now)
 
@@ -837,6 +868,9 @@ def process_runtime_tick(
         charger_command=charger_command,
         last_start_stop=state.start_stop,
         last_runtime_snapshot=snapshot,
+        last_home_assistant_sync_time=last_home_assistant_sync_time,
+        last_charger_switch_command=last_charger_switch_command,
+        last_charger_switch_command_time=last_charger_switch_command_time,
     )
 
 
@@ -895,6 +929,9 @@ def run_scheduler(
     memory.charger_command = tick_result.charger_command
     memory.last_start_stop = tick_result.last_start_stop
     memory.last_runtime_snapshot = tick_result.last_runtime_snapshot
+    memory.last_home_assistant_sync_time = tick_result.last_home_assistant_sync_time
+    memory.last_charger_switch_command = tick_result.last_charger_switch_command
+    memory.last_charger_switch_command_time = tick_result.last_charger_switch_command_time
 
     while not stop_requested:
         timeout = STATE_POLL_INTERVAL_SECONDS
@@ -923,6 +960,9 @@ def run_scheduler(
             memory.charger_command = tick_result.charger_command
             memory.last_start_stop = tick_result.last_start_stop
             memory.last_runtime_snapshot = tick_result.last_runtime_snapshot
+            memory.last_home_assistant_sync_time = tick_result.last_home_assistant_sync_time
+            memory.last_charger_switch_command = tick_result.last_charger_switch_command
+            memory.last_charger_switch_command_time = tick_result.last_charger_switch_command_time
         except HomeAssistantApiError as exc:
             logger.error("Execution tick failed: %s", exc)
 
@@ -1045,24 +1085,45 @@ def _apply_manual_toggle(
     logger: logging.Logger,
     charger_command: bool = False,
     previous_start_stop: bool = False,
-) -> bool:
+    now: datetime,
+    last_switch_command: bool | None,
+    last_switch_command_time: datetime | None,
+) -> tuple[bool, bool | None, datetime | None]:
     if state.start_stop:
         if state.schedule_authorized:
             _set_control_value(store, publisher, "schedule_authorized", False)
             logger.info("Manual Start / Stop toggle disengaged automatic scheduling.")
         if state.cable == CABLE_PLUGGED and not charger_command:
             if not state.charger_enabled:
-                _set_charger_switch(client=client, config=config, enabled=True)
-                logger.info("Manual Start / Stop toggle started charging immediately.")
-            return True
+                changed, last_switch_command, last_switch_command_time = _set_charger_switch(
+                    client=client,
+                    config=config,
+                    enabled=True,
+                    charger_state=state.charger_state,
+                    now=now,
+                    last_switch_command=last_switch_command,
+                    last_switch_command_time=last_switch_command_time,
+                )
+                if changed:
+                    logger.info("Manual Start / Stop toggle started charging immediately.")
+            return True, last_switch_command, last_switch_command_time
         if state.charger_enabled:
-            return True
-        return charger_command
+            return True, last_switch_command, last_switch_command_time
+        return charger_command, last_switch_command, last_switch_command_time
     if previous_start_stop and charger_command:
-        _set_charger_switch(client=client, config=config, enabled=False)
-        logger.info("Manual Start / Stop toggle stopped charging.")
-        return False
-    return charger_command
+        changed, last_switch_command, last_switch_command_time = _set_charger_switch(
+            client=client,
+            config=config,
+            enabled=False,
+            charger_state=state.charger_state,
+            now=now,
+            last_switch_command=last_switch_command,
+            last_switch_command_time=last_switch_command_time,
+        )
+        if changed:
+            logger.info("Manual Start / Stop toggle stopped charging.")
+        return False, last_switch_command, last_switch_command_time
+    return charger_command, last_switch_command, last_switch_command_time
 
 
 def _apply_state_machine_decision(
@@ -1075,15 +1136,27 @@ def _apply_state_machine_decision(
     decision: StateMachineDecision,
     logger: logging.Logger,
     charger_command: bool,
-) -> bool:
+    now: datetime,
+    last_switch_command: bool | None,
+    last_switch_command_time: datetime | None,
+) -> tuple[bool, bool | None, datetime | None]:
     if decision.set_authorized is not None and decision.set_authorized != state.schedule_authorized:
         _set_control_value(store, publisher, "schedule_authorized", decision.set_authorized)
         logger.info("State machine set authorization to %s.", decision.set_authorized)
     if decision.set_charging is not None and decision.set_charging != charger_command:
-        _set_charger_switch(client=client, config=config, enabled=decision.set_charging)
-        logger.info("State machine set charger command to %s.", decision.set_charging)
-        return decision.set_charging
-    return charger_command
+        changed, last_switch_command, last_switch_command_time = _set_charger_switch(
+            client=client,
+            config=config,
+            enabled=decision.set_charging,
+            charger_state=state.charger_state,
+            now=now,
+            last_switch_command=last_switch_command,
+            last_switch_command_time=last_switch_command_time,
+        )
+        if changed:
+            logger.info("State machine set charger command to %s.", decision.set_charging)
+        return decision.set_charging, last_switch_command, last_switch_command_time
+    return charger_command, last_switch_command, last_switch_command_time
 
 
 def _resolve_soc_at_charge_start(
@@ -1161,11 +1234,24 @@ def _set_charger_switch(
     client: HomeAssistantClient,
     config: AppConfig,
     enabled: bool,
-) -> None:
+    charger_state: str,
+    now: datetime,
+    last_switch_command: bool | None,
+    last_switch_command_time: datetime | None,
+) -> tuple[bool, bool | None, datetime | None]:
+    if _charger_switch_matches_desired_state(enabled=enabled, charger_state=charger_state):
+        return False, last_switch_command, last_switch_command_time
+    if (
+        last_switch_command is enabled
+        and last_switch_command_time is not None
+        and (now - last_switch_command_time).total_seconds() < CHARGER_SWITCH_COMMAND_COOLDOWN_SECONDS
+    ):
+        return False, last_switch_command, last_switch_command_time
     if enabled:
         client.turn_on_switch(config.charger_control_switch_entity)
-        return
-    client.turn_off_switch(config.charger_control_switch_entity)
+    else:
+        client.turn_off_switch(config.charger_control_switch_entity)
+    return True, enabled, now
 
 
 def _enforce_unauthorized_idle(
@@ -1175,16 +1261,28 @@ def _enforce_unauthorized_idle(
     state: ExecutionState,
     logger: logging.Logger,
     charger_command: bool,
-) -> bool:
+    now: datetime,
+    last_switch_command: bool | None,
+    last_switch_command_time: datetime | None,
+) -> tuple[bool, bool | None, datetime | None]:
     if state.schedule_authorized or state.start_stop or state.continuous_power:
-        return charger_command
+        return charger_command, last_switch_command, last_switch_command_time
     if state.cable != CABLE_PLUGGED:
-        return charger_command
+        return charger_command, last_switch_command, last_switch_command_time
     if state.charger_state not in {"connected_requesting_charge", "charging"} and not charger_command:
-        return charger_command
-    _set_charger_switch(client=client, config=config, enabled=False)
-    logger.info("Automatic charging is disengaged; keeping the charger off.")
-    return False
+        return charger_command, last_switch_command, last_switch_command_time
+    changed, last_switch_command, last_switch_command_time = _set_charger_switch(
+        client=client,
+        config=config,
+        enabled=False,
+        charger_state=state.charger_state,
+        now=now,
+        last_switch_command=last_switch_command,
+        last_switch_command_time=last_switch_command_time,
+    )
+    if changed:
+        logger.info("Automatic charging is disengaged; keeping the charger off.")
+    return False, last_switch_command, last_switch_command_time
 
 
 def _end_manual_session_at_target(
@@ -1196,16 +1294,36 @@ def _end_manual_session_at_target(
     state: ExecutionState,
     logger: logging.Logger,
     charger_command: bool,
-) -> bool:
+    now: datetime,
+    last_switch_command: bool | None,
+    last_switch_command_time: datetime | None,
+) -> tuple[bool, bool | None, datetime | None]:
     if not state.start_stop or state.continuous_power:
-        return charger_command
+        return charger_command, last_switch_command, last_switch_command_time
     if state.current_soc is None or state.target_soc is None or state.current_soc < state.target_soc:
-        return charger_command
+        return charger_command, last_switch_command, last_switch_command_time
     _set_control_value(store, publisher, "start_stop", False)
     if charger_command or state.charger_enabled:
-        _set_charger_switch(client=client, config=config, enabled=False)
-    logger.info("Manual charge session reached target SoC; ending the charge session.")
-    return False
+        changed, last_switch_command, last_switch_command_time = _set_charger_switch(
+            client=client,
+            config=config,
+            enabled=False,
+            charger_state=state.charger_state,
+            now=now,
+            last_switch_command=last_switch_command,
+            last_switch_command_time=last_switch_command_time,
+        )
+    else:
+        changed = False
+    if changed or state.start_stop:
+        logger.info("Manual charge session reached target SoC; ending the charge session.")
+    return False, last_switch_command, last_switch_command_time
+
+
+def _charger_switch_matches_desired_state(*, enabled: bool, charger_state: str) -> bool:
+    if enabled:
+        return charger_state == "charging"
+    return charger_state in {"connected_finished_idle", "disconnected"}
 
 
 def _runtime_state_changed(
@@ -1275,7 +1393,16 @@ def sync_home_assistant_state(
     client: HomeAssistantClient,
     config: AppConfig,
     store: MqttStateStore,
-) -> bool:
+    now: datetime,
+    last_sync_time: datetime | None,
+    force: bool = False,
+) -> tuple[bool, datetime | None]:
+    if (
+        not force
+        and last_sync_time is not None
+        and (now - last_sync_time).total_seconds() < HOME_ASSISTANT_STATE_SYNC_INTERVAL_SECONDS
+    ):
+        return False, last_sync_time
     changed = False
 
     pricing_state = client.get_state(config.pricing_information_entity)
@@ -1287,7 +1414,7 @@ def sync_home_assistant_state(
 
     charger_state = _parse_charger_state_value(client.get_entity_value(config.charger_state_sensor_entity))
     changed = store.set_internal_value("charger_state", charger_state) or changed
-    return changed
+    return changed, now
 
 
 def _format_countdown(duration: timedelta) -> str:
