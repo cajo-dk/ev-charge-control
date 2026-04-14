@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.6
+- Treated healthy calculation statuses case-insensitively so `OK` no longer triggers false system-failure severity `100`.
+- Corrected status derivation so resting or planned states continue to publish their intended operator-facing status level.
+
 ## 2.1.5
 - Restored still-missing EVCC startup controls from Home Assistant’s own EVCC entity states when MQTT retained replay and local runtime-state restore are incomplete.
 - Added a final startup fallback for EVCC-owned control values such as `target_soc`, `battery_capacity`, `charger_speed`, and `finish_by`.
