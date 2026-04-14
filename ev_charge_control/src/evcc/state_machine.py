@@ -16,6 +16,7 @@ class StateMachineContext:
     authorized: bool
     charging: bool
     soc_reached: bool
+    continuous_power: bool
     charge_window: str | None
 
 
@@ -29,13 +30,27 @@ class StateMachineDecision:
 
 
 def evaluate_state_machine(context: StateMachineContext) -> StateMachineDecision:
-    if context.soc_reached:
+    if not context.authorized:
+        return StateMachineDecision(rule="scheduler_disengaged")
+
+    if context.cable == CABLE_UNPLUGGED:
+        return StateMachineDecision(rule="unplugged_scheduler_wait")
+
+    if context.soc_reached and not context.continuous_power:
         return StateMachineDecision(
             set_authorized=True,
             set_charging=False,
             status="OK",
             lock_calculation=False,
             rule="auto_reset_soc_reached",
+        )
+
+    if context.soc_reached and context.continuous_power:
+        return StateMachineDecision(
+            set_authorized=True,
+            status="OK",
+            lock_calculation=False,
+            rule="hold_power_after_target",
         )
 
     if (
@@ -57,7 +72,6 @@ def evaluate_state_machine(context: StateMachineContext) -> StateMachineDecision
         and context.charge_window == WINDOW_IN_WINDOW
     ):
         return StateMachineDecision(
-            set_authorized=False,
             set_charging=True,
             status="OK",
             lock_calculation=True,
@@ -99,32 +113,6 @@ def evaluate_state_machine(context: StateMachineContext) -> StateMachineDecision
             status="WARN",
             lock_calculation=False,
             rule="in_window_not_authorized",
-        )
-
-    if (
-        context.cable == CABLE_UNPLUGGED
-        and context.authorized
-        and context.charging
-        and context.charge_window == WINDOW_IN_WINDOW
-    ):
-        return StateMachineDecision(
-            set_charging=False,
-            status="WARN",
-            lock_calculation=False,
-            rule="unplugged_while_charging_in_window",
-        )
-
-    if (
-        context.cable == CABLE_UNPLUGGED
-        and context.authorized
-        and context.charging
-        and context.charge_window == WINDOW_PAST_WINDOW
-    ):
-        return StateMachineDecision(
-            set_charging=False,
-            status="ALERT",
-            lock_calculation=False,
-            rule="unplugged_while_charging_past_window",
         )
 
     return StateMachineDecision(rule="no_op")

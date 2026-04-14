@@ -59,6 +59,8 @@ class Snapshot:
     finish_by = "06:30"
     nighttime_charging_only = False
     schedule_authorized = True
+    start_stop = False
+    continuous_power = False
     charger_state = "connected_requesting_charge"
     pricing_information = "{\"raw_today\":[],\"raw_tomorrow\":null,\"forecast\":null}"
 
@@ -90,10 +92,13 @@ def test_publisher_starts_and_publishes_discovery(monkeypatch) -> None:
     assert aggregate_payload["json_attributes_topic"] == "evcc/attributes"
     assert ("evcc/controls/current_soc/set", 1) in fake_client.subscriptions
     assert ("evcc/controls/current_soc/state", 1) in fake_client.subscriptions
-    assert ("evcc/actions/start/press", 1) in fake_client.subscriptions
+    assert ("evcc/controls/start_stop/set", 1) in fake_client.subscriptions
     current_soc_discovery = next(item for item in fake_client.published if item[0] == "homeassistant/number/ev_charge_control_current_soc/config")
     current_soc_payload = json.loads(current_soc_discovery[1])
     assert current_soc_payload["mode"] == "box"
+    start_stop_discovery = next(item for item in fake_client.published if item[0] == "homeassistant/switch/ev_charge_control_start_stop/config")
+    start_stop_payload = json.loads(start_stop_discovery[1])
+    assert start_stop_payload["payload_on"] == "ON"
 
 
 def test_publisher_publishes_runtime_controls_and_attributes(monkeypatch) -> None:
@@ -136,7 +141,7 @@ def test_publisher_publishes_runtime_controls_and_attributes(monkeypatch) -> Non
     assert attributes["status_message"] == "Ready"
 
 
-def test_publisher_routes_control_and_button_messages(monkeypatch) -> None:
+def test_publisher_routes_control_messages(monkeypatch) -> None:
     fake_client = FakeMqttClient()
     monkeypatch.setattr("evcc.mqtt_output.mqtt.Client", lambda *args, **kwargs: fake_client)
     received: list[tuple[str, str, str]] = []
@@ -160,10 +165,10 @@ def test_publisher_routes_control_and_button_messages(monkeypatch) -> None:
 
     fake_client.on_message(fake_client, None, Message("evcc/controls/current_soc/set", "42"))
     fake_client.on_message(fake_client, None, Message("evcc/controls/target_soc/state", "90"))
-    fake_client.on_message(fake_client, None, Message("evcc/actions/start/press", "PRESS"))
+    fake_client.on_message(fake_client, None, Message("evcc/controls/start_stop/set", "ON"))
     assert ("control", "current_soc", "42") in received
     assert ("control_state", "target_soc", "90") in received
-    assert ("button", "start", "PRESS") in received
+    assert ("control", "start_stop", "ON") in received
 
 
 def test_publisher_skips_blank_control_state_publish(monkeypatch) -> None:

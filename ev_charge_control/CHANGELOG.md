@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.0
+- Replaced the one-shot Start action with persisted `Start / Stop` and `Continuous Power` controls for manual charging and charger hold behavior.
+- Fully disengaged automatic scheduling when authorization is off or the cable is unplugged, and cleared calculated schedule outputs in those states.
+- Added state-machine and MQTT coverage for manual override transitions, schedule clearing, and continuous-power target-SoC behavior.
+
 ## 2.1.6
 - Treated healthy calculation statuses case-insensitively so `OK` no longer triggers false system-failure severity `100`.
 - Corrected status derivation so resting or planned states continue to publish their intended operator-facing status level.

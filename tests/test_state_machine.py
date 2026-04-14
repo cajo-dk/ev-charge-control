@@ -16,13 +16,11 @@ def test_auto_reset_takes_precedence() -> None:
             authorized=False,
             charging=True,
             soc_reached=True,
+            continuous_power=False,
             charge_window=WINDOW_PAST_WINDOW,
         )
     )
-    assert decision.set_authorized is True
-    assert decision.set_charging is False
-    assert decision.status == "OK"
-    assert decision.lock_calculation is False
+    assert decision.rule == "scheduler_disengaged"
 
 
 def test_waiting_before_window_rule() -> None:
@@ -32,6 +30,7 @@ def test_waiting_before_window_rule() -> None:
             authorized=True,
             charging=False,
             soc_reached=False,
+            continuous_power=False,
             charge_window=WINDOW_NOT_REACHED,
         )
     )
@@ -48,10 +47,11 @@ def test_start_charging_in_window_rule() -> None:
             authorized=True,
             charging=False,
             soc_reached=False,
+            continuous_power=False,
             charge_window=WINDOW_IN_WINDOW,
         )
     )
-    assert decision.set_authorized is False
+    assert decision.set_authorized is None
     assert decision.set_charging is True
     assert decision.status == "OK"
     assert decision.lock_calculation is True
@@ -64,6 +64,7 @@ def test_charging_continues_past_window_rule() -> None:
             authorized=True,
             charging=True,
             soc_reached=False,
+            continuous_power=False,
             charge_window=WINDOW_PAST_WINDOW,
         )
     )
@@ -78,6 +79,7 @@ def test_missed_window_start_anyway_rule() -> None:
             authorized=True,
             charging=False,
             soc_reached=False,
+            continuous_power=False,
             charge_window=WINDOW_PAST_WINDOW,
         )
     )
@@ -93,40 +95,40 @@ def test_in_window_not_authorized_rule() -> None:
             authorized=False,
             charging=False,
             soc_reached=False,
+            continuous_power=False,
             charge_window=WINDOW_IN_WINDOW,
         )
     )
-    assert decision.status == "WARN"
-    assert decision.lock_calculation is False
+    assert decision.rule == "scheduler_disengaged"
 
 
-def test_unplugged_while_charging_in_window_rule() -> None:
+def test_unplugged_scheduler_wait_rule() -> None:
     decision = evaluate_state_machine(
         StateMachineContext(
             cable=CABLE_UNPLUGGED,
             authorized=True,
             charging=True,
             soc_reached=False,
+            continuous_power=False,
             charge_window=WINDOW_IN_WINDOW,
         )
     )
-    assert decision.set_charging is False
-    assert decision.status == "WARN"
-    assert decision.lock_calculation is False
+    assert decision.rule == "unplugged_scheduler_wait"
 
 
-def test_unplugged_while_charging_past_window_rule() -> None:
+def test_continuous_power_hold_rule() -> None:
     decision = evaluate_state_machine(
         StateMachineContext(
-            cable=CABLE_UNPLUGGED,
+            cable=CABLE_PLUGGED,
             authorized=True,
             charging=True,
-            soc_reached=False,
-            charge_window=WINDOW_PAST_WINDOW,
+            soc_reached=True,
+            continuous_power=True,
+            charge_window=WINDOW_IN_WINDOW,
         )
     )
-    assert decision.set_charging is False
-    assert decision.status == "ALERT"
+    assert decision.set_charging is None
+    assert decision.status == "OK"
     assert decision.lock_calculation is False
 
 
@@ -137,10 +139,8 @@ def test_unlisted_combination_is_no_op() -> None:
             authorized=False,
             charging=False,
             soc_reached=False,
+            continuous_power=False,
             charge_window=WINDOW_NOT_REACHED,
         )
     )
-    assert decision.set_authorized is None
-    assert decision.set_charging is None
-    assert decision.status is None
-    assert decision.lock_calculation is None
+    assert decision.rule == "scheduler_disengaged"
