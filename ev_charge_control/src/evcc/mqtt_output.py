@@ -20,6 +20,8 @@ CONTROL_DEFINITIONS = {
     "finish_by": {"component": "text", "name": "Finish By"},
     "nighttime_charging_only": {"component": "switch", "name": "Nighttime Charging Only"},
     "schedule_authorized": {"component": "switch", "name": "Schedule Authorized"},
+    "start_stop": {"component": "switch", "name": "Start / Stop"},
+    "continuous_power": {"component": "switch", "name": "Continuous Power"},
 }
 
 SENSOR_DEFINITIONS = {
@@ -132,10 +134,6 @@ class MQTTOutputPublisher:
     def sensor_state_topic(self, key: str) -> str:
         return f"{self.topic_prefix}/sensors/{key}/state"
 
-    @property
-    def start_button_topic(self) -> str:
-        return f"{self.topic_prefix}/actions/start/press"
-
     def _on_connect(self, client: mqtt.Client, _userdata: Any, _flags: Any, reason_code: Any, _properties: Any) -> None:
         self.logger.info("Connected to MQTT broker at %s:%s", self.host, self.port)
         self._connected.set()
@@ -154,9 +152,6 @@ class MQTTOutputPublisher:
         topic = message.topic
         payload = message.payload.decode("utf-8")
         try:
-            if topic == self.start_button_topic:
-                self._message_handler("button", "start", payload)
-                return
             for key in CONTROL_DEFINITIONS:
                 if topic == self.control_command_topic(key):
                     self._message_handler("control", key, payload)
@@ -196,25 +191,8 @@ class MQTTOutputPublisher:
                 retain=True,
             )
 
-        button_payload = {
-            "name": "Start",
-            "object_id": f"{self.device_object_id}_start",
-            "unique_id": f"{self.device_object_id}_start",
-            "command_topic": self.start_button_topic,
-            "payload_press": "PRESS",
-            "availability_topic": self.availability_topic,
-            "payload_available": "online",
-            "payload_not_available": "offline",
-            "device": self._device_descriptor(),
-        }
-        self._publish(
-            self._entity_discovery_topic("button", "start"),
-            json.dumps(button_payload),
-            retain=True,
-        )
-
     def _subscribe_runtime_topics(self, client: mqtt.Client) -> None:
-        topics = [(self.start_button_topic, 1)]
+        topics: list[tuple[str, int]] = []
         topics.extend((self.control_command_topic(key), 1) for key in CONTROL_DEFINITIONS)
         topics.extend((self.control_state_topic(key), 1) for key in CONTROL_DEFINITIONS)
         for topic, qos in topics:
@@ -268,7 +246,7 @@ class MQTTOutputPublisher:
         }
 
     def _serialize_value(self, key: str, value: Any) -> str:
-        if key in {"nighttime_charging_only", "schedule_authorized"}:
+        if key in {"nighttime_charging_only", "schedule_authorized", "start_stop", "continuous_power"}:
             return "ON" if bool(value) else "OFF"
         if value is None:
             return ""

@@ -17,6 +17,7 @@ from evcc.runtime import (
     NO_SCHEDULE_TIME,
     LiveInputs,
     PricingPayload,
+    build_placeholder_result,
     build_error_result,
     calculate_result,
     parse_finish_by_value,
@@ -61,6 +62,8 @@ PERSISTED_CONTROL_KEYS = (
     "finish_by",
     "nighttime_charging_only",
     "schedule_authorized",
+    "start_stop",
+    "continuous_power",
 )
 
 
@@ -104,9 +107,10 @@ class RuntimeSnapshot:
     finish_by: str | None = None
     nighttime_charging_only: bool = False
     schedule_authorized: bool = False
+    start_stop: bool = False
+    continuous_power: bool = False
     charger_state: str = "disconnected"
     pricing_information: str = ""
-    start_requests: int = 0
 
 
 @dataclass(slots=True)
@@ -117,6 +121,8 @@ class ExecutionState:
     finish_by: datetime | None
     charger_enabled: bool
     schedule_authorized: bool
+    start_stop: bool
+    continuous_power: bool
     charger_state: str
 
 
@@ -128,6 +134,7 @@ class RuntimeMemory:
     completion_time: str | None = None
     last_charger_enabled: bool | None = None
     charger_command: bool = False
+    last_start_stop: bool = False
 
 
 @dataclass(slots=True)
@@ -138,6 +145,7 @@ class TickResult:
     completion_time: str | None
     last_charger_enabled: bool | None
     charger_command: bool
+    last_start_stop: bool
 
 
 @dataclass(slots=True)
@@ -167,9 +175,10 @@ class MqttStateStore:
                 finish_by=self._snapshot.finish_by,
                 nighttime_charging_only=self._snapshot.nighttime_charging_only,
                 schedule_authorized=self._snapshot.schedule_authorized,
+                start_stop=self._snapshot.start_stop,
+                continuous_power=self._snapshot.continuous_power,
                 charger_state=self._snapshot.charger_state,
                 pricing_information=self._snapshot.pricing_information,
-                start_requests=self._snapshot.start_requests,
             )
 
     def version(self) -> int:
@@ -183,22 +192,8 @@ class MqttStateStore:
         self._changed.clear()
 
     def handle_message(self, message_type: str, key: str, payload: str) -> None:
-        if message_type == "button" and key == "start":
-            self.press_start()
-            return
         if message_type in {"control", "control_state"}:
             self.update_value(key, payload)
-
-    def press_start(self) -> None:
-        with self._lock:
-            self._snapshot.start_requests += 1
-            self._mark_changed_locked()
-
-    def consume_start_requests(self) -> int:
-        with self._lock:
-            count = self._snapshot.start_requests
-            self._snapshot.start_requests = 0
-            return count
 
     def update_value(self, key: str, payload: str) -> bool:
         parser = _STORE_PARSERS.get(key)
@@ -449,6 +444,8 @@ def load_execution_state(snapshot: RuntimeSnapshot, *, now: datetime) -> Executi
         finish_by=_try_parse_finish_by(snapshot.finish_by, now),
         charger_enabled=_charger_state_is_charging(snapshot.charger_state),
         schedule_authorized=snapshot.schedule_authorized,
+        start_stop=snapshot.start_stop,
+        continuous_power=snapshot.continuous_power,
         charger_state=snapshot.charger_state,
     )
 
@@ -499,6 +496,7 @@ def evaluate_runtime_state(
                 and state.target_soc is not None
                 and state.current_soc >= state.target_soc
             ),
+            continuous_power=state.continuous_power,
             charge_window=charge_window,
         )
     )
@@ -671,16 +669,15 @@ def process_runtime_tick(
         now=now,
     )
 
-    charger_command = _apply_start_requests(
+    charger_command = _apply_manual_toggle(
         client=client,
         config=config,
         store=store,
         publisher=publisher,
         state=state,
-        now=now,
-        published_payload=memory.published_payload,
         logger=logger,
         charger_command=charger_command,
+        previous_start_stop=memory.last_start_stop,
     )
     snapshot = store.snapshot()
     state = load_execution_state(snapshot, now=now)
@@ -688,35 +685,45 @@ def process_runtime_tick(
     previous_status = str((memory.published_payload or {}).get("status", "OK"))
     previous_lock = bool((memory.published_payload or {}).get("lock_calculation", False))
     previous_rule = str((memory.published_payload or {}).get("state_machine_rule", ""))
-
-    decision, charge_window = evaluate_runtime_state(
-        state=state,
-        now=now,
-        published_payload=memory.published_payload,
-    )
-    effective_status = decision.status or previous_status
-    effective_lock = (
-        decision.lock_calculation
-        if decision.lock_calculation is not None
-        else previous_lock
-    )
-    effective_rule = decision.rule or previous_rule
-    charger_command = _apply_state_machine_decision(
-        client=client,
-        config=config,
-        store=store,
-        publisher=publisher,
-        state=state,
-        decision=decision,
-        logger=logger,
-        charger_command=charger_command,
-    )
-
-    snapshot = store.snapshot()
-    state = load_execution_state(snapshot, now=now)
+    effective_status = previous_status
+    effective_lock = previous_lock
+    effective_rule = previous_rule
     charge_window = derive_charge_window(memory.published_payload, now=now)
 
-    if not effective_lock and ((force_recalculate or home_assistant_changed) or should_run_calculation(now, memory.last_calculation_time)):
+    if _scheduler_is_active(state):
+        decision, charge_window = evaluate_runtime_state(
+            state=state,
+            now=now,
+            published_payload=memory.published_payload,
+        )
+        effective_status = decision.status or previous_status
+        effective_lock = (
+            decision.lock_calculation
+            if decision.lock_calculation is not None
+            else previous_lock
+        )
+        effective_rule = decision.rule or previous_rule
+        charger_command = _apply_state_machine_decision(
+            client=client,
+            config=config,
+            store=store,
+            publisher=publisher,
+            state=state,
+            decision=decision,
+            logger=logger,
+            charger_command=charger_command,
+        )
+
+        snapshot = store.snapshot()
+        state = load_execution_state(snapshot, now=now)
+        charge_window = derive_charge_window(memory.published_payload, now=now)
+
+    should_calculate = (
+        _scheduler_is_active(state)
+        and not effective_lock
+        and ((force_recalculate or home_assistant_changed) or should_run_calculation(now, memory.last_calculation_time))
+    )
+    if should_calculate:
         calculation_payload = run_calculation_with_error_handling(snapshot, now=now)
         memory.last_calculation_time = now
         if str(calculation_payload.get("status", "")) != "ok":
@@ -749,6 +756,13 @@ def process_runtime_tick(
         )
         snapshot = store.snapshot()
         state = load_execution_state(snapshot, now=now)
+
+    if not _scheduler_is_active(state):
+        memory.published_payload = _build_cleared_schedule_payload(now=now)
+        effective_status = "OK"
+        effective_lock = False
+        effective_rule = "scheduler_cleared"
+        charge_window = None
 
     base_payload = memory.published_payload or build_error_result("No schedule calculated.", now=now)
     base_payload["state_machine_rule"] = effective_rule
@@ -787,6 +801,7 @@ def process_runtime_tick(
         completion_time=status_details.completion_time,
         last_charger_enabled=state.charger_enabled,
         charger_command=charger_command,
+        last_start_stop=state.start_stop,
     )
 
 
@@ -843,6 +858,7 @@ def run_scheduler(
     memory.completion_time = tick_result.completion_time
     memory.last_charger_enabled = tick_result.last_charger_enabled
     memory.charger_command = tick_result.charger_command
+    memory.last_start_stop = tick_result.last_start_stop
 
     while not stop_requested:
         current_time = datetime.now().astimezone()
@@ -871,6 +887,7 @@ def run_scheduler(
             memory.completion_time = tick_result.completion_time
             memory.last_charger_enabled = tick_result.last_charger_enabled
             memory.charger_command = tick_result.charger_command
+            memory.last_start_stop = tick_result.last_start_stop
         except HomeAssistantApiError as exc:
             logger.error("Minute execution tick failed: %s", exc)
 
@@ -945,6 +962,9 @@ def derive_status_details(
         end_at = resolve_schedule_end(start=start, end=end, timestamp=timestamp, now=now)
         return StatusDetails(f"Charge session active - expected finish at {end_at.strftime('%H:%M')}", 20, None)
 
+    if state.charger_enabled:
+        return StatusDetails("Charge session active", 20, None)
+
     charge_window = derive_charge_window(published_payload, now=now)
     if (
         charge_window == WINDOW_NOT_REACHED
@@ -970,7 +990,7 @@ def derive_status_details(
         and not state.charger_enabled
     ):
         return StatusDetails(
-            "Automatic charging is disabled. Press Start to begin.",
+            "Automatic charging is disabled. Toggle Start / Stop to begin.",
             50,
             None,
         )
@@ -980,34 +1000,33 @@ def derive_status_details(
     return StatusDetails("Ready", 0, None)
 
 
-def _apply_start_requests(
+def _apply_manual_toggle(
     *,
     client: HomeAssistantClient,
     config: AppConfig,
     store: MqttStateStore,
     publisher: MQTTOutputPublisher,
     state: ExecutionState,
-    now: datetime,
-    published_payload: dict[str, Any] | None,
     logger: logging.Logger,
     charger_command: bool = False,
+    previous_start_stop: bool = False,
 ) -> bool:
-    presses = store.consume_start_requests()
-    if presses <= 0:
+    if state.start_stop:
+        if state.schedule_authorized:
+            _set_control_value(store, publisher, "schedule_authorized", False)
+            logger.info("Manual Start / Stop toggle disengaged automatic scheduling.")
+        if state.cable == CABLE_PLUGGED and not charger_command:
+            if not state.charger_enabled:
+                _set_charger_switch(client=client, config=config, enabled=True)
+                logger.info("Manual Start / Stop toggle started charging immediately.")
+            return True
+        if state.charger_enabled:
+            return True
         return charger_command
-    _set_control_value(store, publisher, "schedule_authorized", True)
-    logger.info("Received MQTT Start button press; authorization enabled.")
-    charge_window = derive_charge_window(published_payload, now=now)
-    if (
-        state.cable == CABLE_PLUGGED
-        and state.current_soc is not None
-        and state.target_soc is not None
-        and state.current_soc < state.target_soc
-        and charge_window == WINDOW_IN_WINDOW
-    ):
-        _set_charger_switch(client=client, config=config, enabled=True)
-        logger.info("Start button triggered charger command because the session is already in window.")
-        return True
+    if previous_start_stop and charger_command:
+        _set_charger_switch(client=client, config=config, enabled=False)
+        logger.info("Manual Start / Stop toggle stopped charging.")
+        return False
     return charger_command
 
 
@@ -1065,7 +1084,7 @@ def _update_completion_time(
     previous_charger_enabled: bool | None,
     state: ExecutionState,
     now: datetime,
-) -> str | None:
+    ) -> str | None:
     if state.cable == CABLE_UNPLUGGED:
         return None
     if state.current_soc is not None and state.target_soc is not None and state.current_soc < state.target_soc:
@@ -1079,6 +1098,17 @@ def _update_completion_time(
     ):
         return now.strftime("%H:%M")
     return previous_completion
+
+
+def _scheduler_is_active(state: ExecutionState) -> bool:
+    return state.schedule_authorized and state.cable == CABLE_PLUGGED and not state.start_stop
+
+
+def _build_cleared_schedule_payload(*, now: datetime) -> dict[str, Any]:
+    payload = build_placeholder_result(now)
+    payload["status"] = "OK"
+    payload["lock_calculation"] = False
+    return payload
 
 
 def _should_log_charge_progress(*, now: datetime, state: ExecutionState) -> bool:
@@ -1310,4 +1340,6 @@ _STORE_PARSERS: dict[str, Any] = {
     "finish_by": _parse_finish_by_payload,
     "nighttime_charging_only": _parse_switch_payload,
     "schedule_authorized": _parse_switch_payload,
+    "start_stop": _parse_switch_payload,
+    "continuous_power": _parse_switch_payload,
 }
