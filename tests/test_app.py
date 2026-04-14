@@ -565,3 +565,24 @@ def test_derive_status_details_keeps_error_precedence() -> None:
     )
     assert details.message == "boom"
     assert details.level == 100
+
+
+def test_derive_status_details_treats_uppercase_ok_as_non_error() -> None:
+    from evcc.app import load_execution_state
+
+    store = seed_store(schedule_authorized=True)
+    store.set_internal_value("charger_state", "connected_finished_idle")
+    state = load_execution_state(store.snapshot(), now=datetime.fromisoformat("2026-03-14T18:19:00+01:00"))
+    details = derive_status_details(
+        state=state,
+        published_payload={
+            "status": "OK",
+            "start": "23:15",
+            "end": "00:00",
+            "timestamp": "2026-03-14T18:00:00+01:00",
+        },
+        now=datetime.fromisoformat("2026-03-14T18:19:00+01:00"),
+        completion_time=None,
+    )
+    assert details.message == "Charge session planned - expected start in 04:56"
+    assert details.level == 10

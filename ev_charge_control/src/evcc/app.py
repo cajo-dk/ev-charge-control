@@ -934,7 +934,8 @@ def derive_status_details(
     completion_time: str | None,
 ) -> StatusDetails:
     status = str(published_payload.get("status", "ok"))
-    if status != "ok" and status != "No schedule calculated.":
+    normalized_status = status.strip().lower()
+    if normalized_status not in {"ok", "no schedule calculated."}:
         return StatusDetails(status, 100, completion_time)
 
     start = str(published_payload.get("start", "")).strip()
