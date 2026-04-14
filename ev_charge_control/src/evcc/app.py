@@ -45,6 +45,7 @@ RUN_MINUTES = (1, 16, 31, 46)
 SUPPORTED_LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}
 STARTUP_CONNECT_TIMEOUT_SECONDS = 5.0
 STARTUP_RESTORE_TIMEOUT_SECONDS = 2.0
+STATE_POLL_INTERVAL_SECONDS = 1.0
 STARTUP_REQUIRED_CONTROL_KEYS = (
     "current_soc",
     "target_soc",
@@ -135,6 +136,7 @@ class RuntimeMemory:
     last_charger_enabled: bool | None = None
     charger_command: bool = False
     last_start_stop: bool = False
+    last_runtime_snapshot: RuntimeSnapshot | None = None
 
 
 @dataclass(slots=True)
@@ -146,6 +148,7 @@ class TickResult:
     last_charger_enabled: bool | None
     charger_command: bool
     last_start_stop: bool
+    last_runtime_snapshot: RuntimeSnapshot
 
 
 @dataclass(slots=True)
@@ -646,6 +649,8 @@ def process_runtime_tick(
     memory: RuntimeMemory,
     force_recalculate: bool,
 ) -> TickResult:
+    previous_output_payload = memory.published_payload
+    previous_snapshot = memory.last_runtime_snapshot
     home_assistant_changed = sync_home_assistant_state(
         client=client,
         config=config,
@@ -681,20 +686,27 @@ def process_runtime_tick(
     )
     snapshot = store.snapshot()
     state = load_execution_state(snapshot, now=now)
+    charger_command = _enforce_unauthorized_idle(
+        client=client,
+        config=config,
+        state=state,
+        logger=logger,
+        charger_command=charger_command,
+    )
 
-    previous_status = str((memory.published_payload or {}).get("status", "OK"))
-    previous_lock = bool((memory.published_payload or {}).get("lock_calculation", False))
-    previous_rule = str((memory.published_payload or {}).get("state_machine_rule", ""))
+    previous_status = str((previous_output_payload or {}).get("status", "OK"))
+    previous_lock = bool((previous_output_payload or {}).get("lock_calculation", False))
+    previous_rule = str((previous_output_payload or {}).get("state_machine_rule", ""))
     effective_status = previous_status
     effective_lock = previous_lock
     effective_rule = previous_rule
-    charge_window = derive_charge_window(memory.published_payload, now=now)
+    charge_window = derive_charge_window(previous_output_payload, now=now)
 
     if _scheduler_is_active(state):
         decision, charge_window = evaluate_runtime_state(
             state=state,
             now=now,
-            published_payload=memory.published_payload,
+            published_payload=previous_output_payload,
         )
         effective_status = decision.status or previous_status
         effective_lock = (
@@ -716,7 +728,7 @@ def process_runtime_tick(
 
         snapshot = store.snapshot()
         state = load_execution_state(snapshot, now=now)
-        charge_window = derive_charge_window(memory.published_payload, now=now)
+        charge_window = derive_charge_window(previous_output_payload, now=now)
 
     should_calculate = (
         _scheduler_is_active(state)
@@ -790,9 +802,20 @@ def process_runtime_tick(
         charger_state=state.charger_state,
         pricing_information=_try_load_pricing_information(snapshot.pricing_information),
     )
-    publisher.publish_runtime_state(snapshot=snapshot, payload=output_payload)
-    if _should_log_charge_progress(now=now, state=state):
-        logger.info("Charge progress over MQTT: %s", output_payload)
+    if _runtime_state_changed(
+        previous_output_payload=previous_output_payload,
+        output_payload=output_payload,
+        previous_snapshot=previous_snapshot,
+        snapshot=snapshot,
+    ):
+        publisher.publish_runtime_state(snapshot=snapshot, payload=output_payload)
+        _log_runtime_state_changes(
+            logger=logger,
+            previous_output_payload=previous_output_payload,
+            output_payload=output_payload,
+            previous_snapshot=previous_snapshot,
+            snapshot=snapshot,
+        )
 
     return TickResult(
         last_calculation_time=memory.last_calculation_time,
@@ -802,6 +825,7 @@ def process_runtime_tick(
         last_charger_enabled=state.charger_enabled,
         charger_command=charger_command,
         last_start_stop=state.start_stop,
+        last_runtime_snapshot=snapshot,
     )
 
 
@@ -859,11 +883,10 @@ def run_scheduler(
     memory.last_charger_enabled = tick_result.last_charger_enabled
     memory.charger_command = tick_result.charger_command
     memory.last_start_stop = tick_result.last_start_stop
+    memory.last_runtime_snapshot = tick_result.last_runtime_snapshot
 
     while not stop_requested:
-        current_time = datetime.now().astimezone()
-        next_tick = current_time.replace(second=0, microsecond=0) + timedelta(minutes=1)
-        timeout = max((next_tick - current_time).total_seconds(), 0.0)
+        timeout = STATE_POLL_INTERVAL_SECONDS
         changed = store.wait_for_change(timeout)
         store.clear_change_flag()
         if stop_requested:
@@ -888,8 +911,9 @@ def run_scheduler(
             memory.last_charger_enabled = tick_result.last_charger_enabled
             memory.charger_command = tick_result.charger_command
             memory.last_start_stop = tick_result.last_start_stop
+            memory.last_runtime_snapshot = tick_result.last_runtime_snapshot
         except HomeAssistantApiError as exc:
-            logger.error("Minute execution tick failed: %s", exc)
+            logger.error("Execution tick failed: %s", exc)
 
     publisher.stop()
     return 0
@@ -1111,10 +1135,6 @@ def _build_cleared_schedule_payload(*, now: datetime) -> dict[str, Any]:
     return payload
 
 
-def _should_log_charge_progress(*, now: datetime, state: ExecutionState) -> bool:
-    return state.charger_enabled and now.minute % 15 == 0
-
-
 def _set_control_value(
     store: MqttStateStore,
     publisher: MQTTOutputPublisher,
@@ -1135,6 +1155,87 @@ def _set_charger_switch(
         client.turn_on_switch(config.charger_control_switch_entity)
         return
     client.turn_off_switch(config.charger_control_switch_entity)
+
+
+def _enforce_unauthorized_idle(
+    *,
+    client: HomeAssistantClient,
+    config: AppConfig,
+    state: ExecutionState,
+    logger: logging.Logger,
+    charger_command: bool,
+) -> bool:
+    if state.schedule_authorized or state.start_stop or state.continuous_power:
+        return charger_command
+    if state.cable != CABLE_PLUGGED:
+        return charger_command
+    if state.charger_state not in {"connected_requesting_charge", "charging"} and not charger_command:
+        return charger_command
+    _set_charger_switch(client=client, config=config, enabled=False)
+    logger.info("Automatic charging is disengaged; keeping the charger off.")
+    return False
+
+
+def _runtime_state_changed(
+    *,
+    previous_output_payload: dict[str, Any] | None,
+    output_payload: dict[str, Any],
+    previous_snapshot: RuntimeSnapshot | None,
+    snapshot: RuntimeSnapshot,
+) -> bool:
+    if previous_output_payload != output_payload:
+        return True
+    return _snapshot_logging_state(previous_snapshot) != _snapshot_logging_state(snapshot)
+
+
+def _log_runtime_state_changes(
+    *,
+    logger: logging.Logger,
+    previous_output_payload: dict[str, Any] | None,
+    output_payload: dict[str, Any],
+    previous_snapshot: RuntimeSnapshot | None,
+    snapshot: RuntimeSnapshot,
+) -> None:
+    if not logger.isEnabledFor(logging.INFO):
+        return
+    previous_logged = _combined_logging_state(previous_output_payload, previous_snapshot)
+    current_logged = _combined_logging_state(output_payload, snapshot)
+    for key, value in current_logged.items():
+        previous_value = previous_logged.get(key)
+        if previous_value != value:
+            logger.info("State changed: %s=%r -> %r", key, previous_value, value)
+
+
+def _combined_logging_state(
+    output_payload: dict[str, Any] | None,
+    snapshot: RuntimeSnapshot | None,
+) -> dict[str, Any]:
+    combined = _snapshot_logging_state(snapshot)
+    if output_payload is None:
+        return combined
+    for key, value in output_payload.items():
+        if key == "pricing_information":
+            continue
+        combined[key] = value
+    return combined
+
+
+def _snapshot_logging_state(snapshot: RuntimeSnapshot | None) -> dict[str, Any]:
+    if snapshot is None:
+        return {}
+    return {
+        "current_soc": snapshot.current_soc,
+        "target_soc": snapshot.target_soc,
+        "battery_capacity": snapshot.battery_capacity,
+        "charger_speed": snapshot.charger_speed,
+        "charge_loss": snapshot.charge_loss,
+        "finish_by": snapshot.finish_by,
+        "nighttime_charging_only": snapshot.nighttime_charging_only,
+        "schedule_authorized": snapshot.schedule_authorized,
+        "start_stop": snapshot.start_stop,
+        "continuous_power": snapshot.continuous_power,
+        "charger_state": snapshot.charger_state,
+    }
 
 
 def sync_home_assistant_state(
