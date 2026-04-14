@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deploy"
+  short_description: "Release EVCC from main safely"
+  default_prompt: "Use $deploy to prepare, tag, and publish the latest EVCC release."
