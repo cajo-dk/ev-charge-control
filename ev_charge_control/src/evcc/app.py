@@ -686,6 +686,17 @@ def process_runtime_tick(
     )
     snapshot = store.snapshot()
     state = load_execution_state(snapshot, now=now)
+    charger_command = _end_manual_session_at_target(
+        client=client,
+        config=config,
+        store=store,
+        publisher=publisher,
+        state=state,
+        logger=logger,
+        charger_command=charger_command,
+    )
+    snapshot = store.snapshot()
+    state = load_execution_state(snapshot, now=now)
     charger_command = _enforce_unauthorized_idle(
         client=client,
         config=config,
@@ -1173,6 +1184,27 @@ def _enforce_unauthorized_idle(
         return charger_command
     _set_charger_switch(client=client, config=config, enabled=False)
     logger.info("Automatic charging is disengaged; keeping the charger off.")
+    return False
+
+
+def _end_manual_session_at_target(
+    *,
+    client: HomeAssistantClient,
+    config: AppConfig,
+    store: MqttStateStore,
+    publisher: MQTTOutputPublisher,
+    state: ExecutionState,
+    logger: logging.Logger,
+    charger_command: bool,
+) -> bool:
+    if not state.start_stop or state.continuous_power:
+        return charger_command
+    if state.current_soc is None or state.target_soc is None or state.current_soc < state.target_soc:
+        return charger_command
+    _set_control_value(store, publisher, "start_stop", False)
+    if charger_command or state.charger_enabled:
+        _set_charger_switch(client=client, config=config, enabled=False)
+    logger.info("Manual charge session reached target SoC; ending the charge session.")
     return False
 
 
