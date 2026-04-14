@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.1
+- Logged EVCC state and activity changes at `INFO` without including pricing payload details.
+- Reflected status and charger-state changes back to MQTT immediately instead of waiting for the one-minute runtime loop.
+- Kept the charger off when scheduling is de-authorized, manual override is inactive, and `Continuous Power` is off even if the vehicle requests charge on its own.
+
 ## 2.2.0
 - Replaced the one-shot Start action with persisted `Start / Stop` and `Continuous Power` controls for manual charging and charger hold behavior.
 - Fully disengaged automatic scheduling when authorization is off or the cable is unplugged, and cleared calculated schedule outputs in those states.
