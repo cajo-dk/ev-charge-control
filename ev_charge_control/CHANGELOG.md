@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.2.2
+- Ended manual charge sessions automatically when target SoC is reached and `Continuous Power` is off.
+- Cleared the `Start / Stop` toggle when a manual session is stopped at target SoC so charging does not restart on the next tick.
+
 ## 2.2.1
 - Logged EVCC state and activity changes at `INFO` without including pricing payload details.
 - Reflected status and charger-state changes back to MQTT immediately instead of waiting for the one-minute runtime loop.
