@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.3
+- Throttled Home Assistant pricing and charger-state reads to once every 30 seconds.
+- Suppressed repeated identical charger switch commands with a 30-second cooldown while still sending the first required off command.
+- Reduced repeated charger-control traffic against integrations such as Monta to avoid rate-limit failures.
+
 ## 2.2.2
 - Ended manual charge sessions automatically when target SoC is reached and `Continuous Power` is off.
 - Cleared the `Start / Stop` toggle when a manual session is stopped at target SoC so charging does not restart on the next tick.
