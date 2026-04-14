@@ -631,6 +631,40 @@ def test_process_runtime_tick_keeps_manual_charging_active_without_schedule() ->
     assert result.published_payload["status_level"] == 20
 
 
+def test_manual_charge_session_stops_at_target_when_continuous_power_is_off() -> None:
+    store = seed_store(
+        current_soc="80",
+        target_soc="80",
+        schedule_authorized=False,
+        start_stop=True,
+        continuous_power=False,
+    )
+    publisher = DummyPublisher()
+    client = DummyClient()
+    client.charger_state = "charging"
+    memory = RuntimeMemory(
+        charger_command=True,
+        last_start_stop=True,
+        published_payload={"start": "--:--", "end": "--:--", "timestamp": "2026-03-14T00:01:00+01:00", "status": "ok"},
+    )
+
+    result = process_runtime_tick(
+        client=client,
+        config=build_config(),
+        store=store,
+        publisher=publisher,
+        logger=logging.getLogger("test"),
+        now=datetime.fromisoformat("2026-03-14T00:20:00+01:00"),
+        memory=memory,
+        force_recalculate=False,
+    )
+
+    assert ("start_stop", False) in publisher.control_states
+    assert ("turn_off_switch", "switch.ev_charger_control") in client.actions
+    assert result.charger_command is False
+    assert result.last_start_stop is False
+
+
 def test_process_runtime_tick_keeps_charger_off_when_unauthorized_and_requesting_charge() -> None:
     store = seed_store(schedule_authorized=False, continuous_power=False, start_stop=False)
     publisher = DummyPublisher()
