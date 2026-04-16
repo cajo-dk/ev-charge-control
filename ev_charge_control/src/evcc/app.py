@@ -1033,6 +1033,14 @@ def derive_status_details(
     start = str(published_payload.get("start", "")).strip()
     end = str(published_payload.get("end", "")).strip()
     timestamp = str(published_payload.get("timestamp", "")).strip()
+    if completion_time and not state.charger_enabled and state.current_soc is not None and state.target_soc is not None:
+        if state.current_soc >= state.target_soc:
+            return StatusDetails("Charge session complete", 10, completion_time)
+
+    if completion_time and state.current_soc is not None and state.target_soc is not None:
+        if state.current_soc >= state.target_soc and state.continuous_power:
+            return StatusDetails("Charge session complete - providing continuous power", 10, completion_time)
+
     if state.charger_enabled and start and end and timestamp and end != NO_SCHEDULE_TIME:
         end_at = resolve_schedule_end(start=start, end=end, timestamp=timestamp, now=now)
         return StatusDetails(f"Charge session active - expected finish at {end_at.strftime('%H:%M')}", 20, None)
@@ -1051,10 +1059,6 @@ def derive_status_details(
         start_at = resolve_schedule_start(start=start, timestamp=timestamp, now=now)
         remaining = _format_countdown(max(start_at - now, timedelta()))
         return StatusDetails(f"Charge session planned - expected start in {remaining}", 10, None)
-
-    if completion_time and not state.charger_enabled and state.current_soc is not None and state.target_soc is not None:
-        if state.current_soc >= state.target_soc:
-            return StatusDetails(f"Charge session completed at {completion_time}", 10, completion_time)
 
     if (
         state.cable == CABLE_PLUGGED
@@ -1265,9 +1269,17 @@ def _enforce_unauthorized_idle(
     last_switch_command: bool | None,
     last_switch_command_time: datetime | None,
 ) -> tuple[bool, bool | None, datetime | None]:
-    if state.schedule_authorized or state.start_stop or state.continuous_power:
+    if state.schedule_authorized or state.start_stop:
         return charger_command, last_switch_command, last_switch_command_time
     if state.cable != CABLE_PLUGGED:
+        return charger_command, last_switch_command, last_switch_command_time
+    if (
+        state.continuous_power
+        and charger_command
+        and state.current_soc is not None
+        and state.target_soc is not None
+        and state.current_soc >= state.target_soc
+    ):
         return charger_command, last_switch_command, last_switch_command_time
     if state.charger_state not in {"connected_requesting_charge", "charging"} and not charger_command:
         return charger_command, last_switch_command, last_switch_command_time

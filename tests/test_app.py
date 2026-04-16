@@ -380,7 +380,7 @@ def test_process_runtime_tick_latches_completion_status() -> None:
         force_recalculate=False,
     )
 
-    assert result.published_payload["status_message"] == "Charge session completed at 05:10"
+    assert result.published_payload["status_message"] == "Charge session complete"
     assert result.published_payload["status_level"] == 10
 
 
@@ -771,6 +771,74 @@ def test_process_runtime_tick_continuous_power_keeps_charger_command_after_targe
 
     assert ("turn_off_switch", "switch.ev_charger_control") not in client.actions
     assert result.charger_command is True
+
+
+def test_process_runtime_tick_continuous_power_completion_status_replaces_active_message() -> None:
+    store = seed_store(
+        current_soc="80",
+        target_soc="80",
+        schedule_authorized=False,
+        continuous_power=True,
+    )
+    publisher = DummyPublisher()
+    client = DummyClient()
+    client.charger_state = "charging"
+    memory = RuntimeMemory(
+        charger_command=True,
+        completion_time="05:00",
+        published_payload={
+            "start": "00:15",
+            "end": "05:00",
+            "timestamp": "2026-03-14T00:01:00+01:00",
+            "status": "ok",
+            "lock_calculation": False,
+        },
+    )
+
+    result = process_runtime_tick(
+        client=client,
+        config=build_config(),
+        store=store,
+        publisher=publisher,
+        logger=logging.getLogger("test"),
+        now=datetime.fromisoformat("2026-03-14T05:10:00+01:00"),
+        memory=memory,
+        force_recalculate=False,
+    )
+
+    assert result.published_payload["status_message"] == "Charge session complete - providing continuous power"
+    assert result.published_payload["status_level"] == 10
+
+
+def test_process_runtime_tick_continuous_power_does_not_allow_unauthorized_auto_charge_start() -> None:
+    store = seed_store(
+        current_soc="79",
+        target_soc="80",
+        schedule_authorized=False,
+        continuous_power=True,
+        start_stop=False,
+    )
+    publisher = DummyPublisher()
+    client = DummyClient()
+    client.charger_state = "connected_requesting_charge"
+    memory = RuntimeMemory(
+        charger_command=True,
+        published_payload={"start": "--:--", "end": "--:--", "timestamp": "2026-03-14T00:01:00+01:00", "status": "ok"},
+    )
+
+    result = process_runtime_tick(
+        client=client,
+        config=build_config(),
+        store=store,
+        publisher=publisher,
+        logger=logging.getLogger("test"),
+        now=datetime.fromisoformat("2026-03-14T05:10:00+01:00"),
+        memory=memory,
+        force_recalculate=False,
+    )
+
+    assert ("turn_off_switch", "switch.ev_charger_control") in client.actions
+    assert result.charger_command is False
 
 
 def test_process_runtime_tick_republishes_status_immediately_when_charger_state_changes() -> None:

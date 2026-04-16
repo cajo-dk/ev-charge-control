@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.4
+- Limited `Continuous Power` to post-completion charger hold behavior instead of allowing unauthorized charging to continue or begin automatically.
+- Changed the completion status text to `Charge session complete` or `Charge session complete - providing continuous power`.
+- Added regression coverage for unauthorized continuous-power charging and completion-state status handling.
+
 ## 2.2.3
 - Throttled Home Assistant pricing and charger-state reads to once every 30 seconds.
 - Suppressed repeated identical charger switch commands with a 30-second cooldown while still sending the first required off command.
